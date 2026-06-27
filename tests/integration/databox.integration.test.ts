@@ -18,8 +18,6 @@ function client(): DataboxClient {
   return new DataboxClient({
     bin: dbxcliBin ?? "dbxcli",
     config: configPath,
-    dataset: process.env.PPMA_DBXCLI_DATASET ?? "issues",
-    createAction: process.env.PPMA_DBXCLI_CREATE_ACTION ?? "create_issue_linear",
   });
 }
 
@@ -67,5 +65,48 @@ describe.skipIf(!enabled)("DataboxPPM tracker (live)", () => {
     expect(task.ref.length).toBeGreaterThan(0);
     expect(task.url).toContain("http");
     expect(task.id?.length).toBeGreaterThan(0);
+  });
+
+  test("listTeams returns neutral teams with key + id", async () => {
+    const teams = await client().listTeams(5);
+    expect(Array.isArray(teams)).toBe(true);
+    if (teams.length > 0) {
+      const first = teams[0];
+      expect(first?.key.length).toBeGreaterThan(0);
+      expect(first?.id.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("listProjects returns neutral projects with id + url", async () => {
+    const projects = await client().listProjects(5);
+    expect(Array.isArray(projects)).toBe(true);
+    if (projects.length > 0) {
+      const first = projects[0];
+      expect(first?.id.length).toBeGreaterThan(0);
+      expect(first?.url).toContain("http");
+    }
+  });
+
+  test("resolveTeamId maps a team key to its UUID", async () => {
+    const teams = await client().listTeams(5);
+    if (teams.length === 0) return; // no teams — nothing to resolve
+    const key = teams[0]?.key ?? "";
+    const id = await client().resolveTeamId(key);
+    expect(id).toBe(teams[0]?.id ?? "");
+  });
+
+  test("createProject (simulated) returns an id + url without touching Linear", async () => {
+    const teams = await client().listTeams(5);
+    if (teams.length === 0) return; // need a team to own the project
+    const project = await client().createProject(
+      {
+        name: "ppmagent simulated project",
+        team: teams[0]?.key ?? "",
+        description: "Safe simulated invoke from tests.",
+      },
+      { simulated: true },
+    );
+    expect(project.id.length).toBeGreaterThan(0);
+    expect(project.url).toContain("http");
   });
 });

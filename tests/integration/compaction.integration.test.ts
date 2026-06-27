@@ -32,8 +32,6 @@ function testConfig(root: string): Config {
     contextRecent: 5,
     dbxcliBin: "dbxcli",
     dbxcliConfig: "",
-    dbxcliDataset: "issues",
-    dbxcliCreateAction: "create_issue_linear",
     telegramBotToken: "test",
     telegramAllowedChatId: undefined,
     sessionFile: join(root, "session.json"),

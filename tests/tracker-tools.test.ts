@@ -2,12 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DataboxClient } from "../src/tracker/databox.ts";
 import { buildTrackerTools } from "../src/tracker/tools.ts";
 
-const databox = new DataboxClient({
-  bin: "dbxcli",
-  config: "",
-  dataset: "issues",
-  createAction: "create_issue_linear",
-});
+const databox = new DataboxClient({ bin: "dbxcli", config: "" });
 
 describe("buildTrackerTools", () => {
   test("exposes the expected neutral tool set", () => {
@@ -15,10 +10,16 @@ describe("buildTrackerTools", () => {
       .map((t) => t.name)
       .sort();
     expect(names).toEqual([
+      "tracker_create_project",
       "tracker_create_task",
+      "tracker_get_project",
       "tracker_get_task",
+      "tracker_get_team",
+      "tracker_list_projects",
       "tracker_list_tasks",
+      "tracker_list_teams",
       "tracker_search_tasks",
+      "tracker_update_project",
     ]);
   });
 

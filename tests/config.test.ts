@@ -15,6 +15,8 @@ describe("loadConfig", () => {
     expect(config.ppmBin).toBe("ppm");
     expect(config.ppmMemoryRoot).toBe("./memory");
     expect(config.contextRecent).toBe(3);
+    expect(config.dbxcliBin).toBe("dbxcli");
+    expect(config.dbxcliConfig).toBe("");
     expect(config.compactionTokenThreshold).toBe(0);
     expect(config.telegramAllowedChatId).toBeUndefined();
     expect(config.logLevel).toBe("info");

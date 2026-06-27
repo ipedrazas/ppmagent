@@ -12,7 +12,9 @@ and delegates two capabilities rather than reimplementing them:
   on-disk Markdown memory format. The agent shells out to it; it never writes
   memory files directly.
 - **Tracker** → **DataboxPPM** (Linear today, repointable at Jira), reached via
-  the `dbxcli` CLI behind neutral tools.
+  the `dbxcli` CLI behind neutral tools. It exposes tasks (issues) and projects
+  as read+write, and teams as read-only reference data (used to resolve the
+  owning team when creating a project).
 
 ```
 Telegram ⇄ Agent (pi runtime)

@@ -48,12 +48,12 @@ export interface Config {
 
   /** `dbxcli` binary (path or name on PATH). */
   dbxcliBin: string;
-  /** dbxcli config file (DataboxPPM endpoint + auth). */
+  /**
+   * dbxcli config file (DataboxPPM endpoint + auth). It also lists the dataset
+   * and action aliases, so those are discovered at runtime rather than configured
+   * here (see {@link DataboxClient}).
+   */
   dbxcliConfig: string;
-  /** DataboxPPM dataset alias holding issues. */
-  dbxcliDataset: string;
-  /** DataboxPPM action alias that creates an issue. */
-  dbxcliCreateAction: string;
 
   /** Telegram bot token. */
   telegramBotToken: string;
@@ -137,8 +137,6 @@ export function loadConfig(env: Env = process.env): Config {
 
     dbxcliBin: optional(env, "PPMA_DBXCLI_BIN", "dbxcli"),
     dbxcliConfig: optional(env, "PPMA_DBXCLI_CONFIG", ""),
-    dbxcliDataset: optional(env, "PPMA_DBXCLI_DATASET", "issues"),
-    dbxcliCreateAction: optional(env, "PPMA_DBXCLI_CREATE_ACTION", "create_issue_linear"),
 
     telegramBotToken: required(env, "PPMA_TELEGRAM_BOT_TOKEN"),
     telegramAllowedChatId: env.PPMA_TELEGRAM_ALLOWED_CHAT_ID || undefined,
