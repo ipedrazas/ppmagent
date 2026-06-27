@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { FauxProviderRegistration } from "@earendil-works/pi-ai";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
+import type { FauxProviderHandle } from "@earendil-works/pi-ai";
+import {
+  createModels,
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+} from "@earendil-works/pi-ai";
 import { buildAgent } from "../../src/agent.ts";
 import type { Config } from "../../src/config.ts";
 import { makeTransformContext } from "../../src/memory/context.ts";
@@ -17,7 +22,8 @@ const PROJECT = "onboarding";
 
 function testConfig(root: string): Config {
   return {
-    anthropicApiKey: "test-key",
+    provider: "anthropic",
+    apiKey: "test-key",
     model: "faux-1",
     ppmBin: ppmBin ?? "ppm",
     ppmMemoryRoot: root,
@@ -38,18 +44,22 @@ function testConfig(root: string): Config {
 describe.skipIf(!ppmBin)("agent + ask_user", () => {
   let root: string;
   let ppm: PpmClient;
-  let faux: FauxProviderRegistration;
+  let faux: FauxProviderHandle;
+  let models: ReturnType<typeof createModels>;
+  const fauxStream: StreamFn = (model, context, options) =>
+    models.streamSimple(model, context, options);
 
   beforeEach(async () => {
     root = mkdtempSync(join(import.meta.dir, ".agentroot-"));
     ppm = new PpmClient({ bin: ppmBin ?? "ppm", root });
     await ppm.run(["init"]);
     await ppm.projectCreate(PROJECT, "Onboarding drop-off");
-    faux = registerFauxProvider({ provider: "faux", models: [{ id: "faux-1" }] });
+    faux = fauxProvider({ provider: "faux", models: [{ id: "faux-1" }] });
+    models = createModels();
+    models.setProvider(faux.provider);
   });
 
   afterEach(() => {
-    faux.unregister();
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
@@ -63,7 +73,10 @@ describe.skipIf(!ppmBin)("agent + ask_user", () => {
       ]),
     ]);
 
-    const { agent } = buildAgent(testConfig(root), () => PROJECT, { model: faux.getModel() });
+    const { agent } = buildAgent(testConfig(root), () => PROJECT, {
+      model: faux.getModel(),
+      streamFn: fauxStream,
+    });
     const toolStarts: string[] = [];
     let ended = false;
     agent.subscribe((e) => {
@@ -90,7 +103,10 @@ describe.skipIf(!ppmBin)("agent + ask_user", () => {
         fauxToolCall("ask_user", { question: "Who owns the onboarding metric?", project: PROJECT }),
       ]),
     ]);
-    const { agent } = buildAgent(testConfig(root), () => PROJECT, { model: faux.getModel() });
+    const { agent } = buildAgent(testConfig(root), () => PROJECT, {
+      model: faux.getModel(),
+      streamFn: fauxStream,
+    });
     await agent.prompt("improve onboarding");
 
     const transform = makeTransformContext({ ppm, recent: 3, getActiveProject: () => PROJECT });
@@ -115,7 +131,10 @@ describe.skipIf(!ppmBin)("agent + ask_user", () => {
       fauxAssistantMessage("Recorded the decision."),
     ]);
 
-    const { agent } = buildAgent(testConfig(root), () => PROJECT, { model: faux.getModel() });
+    const { agent } = buildAgent(testConfig(root), () => PROJECT, {
+      model: faux.getModel(),
+      streamFn: fauxStream,
+    });
     const toolStarts: string[] = [];
     agent.subscribe((e) => {
       if (e.type === "tool_execution_start") toolStarts.push(e.toolName);

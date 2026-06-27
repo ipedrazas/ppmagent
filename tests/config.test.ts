@@ -9,6 +9,8 @@ const base: Env = {
 describe("loadConfig", () => {
   test("applies defaults when only required vars are set", () => {
     const config = loadConfig(base);
+    expect(config.provider).toBe("anthropic");
+    expect(config.apiKey).toBe("sk-test");
     expect(config.model).toBe("claude-sonnet-4-6");
     expect(config.ppmBin).toBe("ppm");
     expect(config.ppmMemoryRoot).toBe("./memory");
@@ -39,6 +41,50 @@ describe("loadConfig", () => {
 
   test("throws when a required var is missing", () => {
     expect(() => loadConfig({ ANTHROPIC_API_KEY: "x" })).toThrow(/PPMA_TELEGRAM_BOT_TOKEN/);
+  });
+
+  test("selects an alternate provider with its own key and default model", () => {
+    const config = loadConfig({
+      PPMA_PROVIDER: "deepseek",
+      DEEPSEEK_API_KEY: "ds-test",
+      PPMA_TELEGRAM_BOT_TOKEN: "tg-test",
+    });
+    expect(config.provider).toBe("deepseek");
+    expect(config.apiKey).toBe("ds-test");
+    expect(config.model).toBe("deepseek-v4-pro");
+  });
+
+  test("normalises the glm alias to the zai provider", () => {
+    const config = loadConfig({
+      PPMA_PROVIDER: "glm",
+      ZAI_API_KEY: "zai-test",
+      PPMA_TELEGRAM_BOT_TOKEN: "tg-test",
+    });
+    expect(config.provider).toBe("zai");
+    expect(config.apiKey).toBe("zai-test");
+    expect(config.model).toBe("glm-4.7");
+  });
+
+  test("requires the selected provider's API key", () => {
+    expect(() =>
+      loadConfig({ PPMA_PROVIDER: "openrouter", PPMA_TELEGRAM_BOT_TOKEN: "tg-test" }),
+    ).toThrow(/OPENROUTER_API_KEY/);
+  });
+
+  test("rejects an unknown provider", () => {
+    expect(() => loadConfig({ ...base, PPMA_PROVIDER: "llama" })).toThrow(
+      /PPMA_PROVIDER must be one of/,
+    );
+  });
+
+  test("honours an explicit model override for an alternate provider", () => {
+    const config = loadConfig({
+      PPMA_PROVIDER: "openrouter",
+      OPENROUTER_API_KEY: "or-test",
+      PPMA_MODEL: "anthropic/claude-opus-4.5",
+      PPMA_TELEGRAM_BOT_TOKEN: "tg-test",
+    });
+    expect(config.model).toBe("anthropic/claude-opus-4.5");
   });
 
   test("parses integer overrides", () => {

@@ -5,10 +5,38 @@
 
 import { LOG_FORMATS, LOG_LEVELS, type LogFormat, type LogLevel } from "./logger.ts";
 
+/** LLM providers we support. Names match the provider ids pi's getBuiltinModel() expects. */
+export const PROVIDERS = ["anthropic", "deepseek", "zai", "openrouter"] as const;
+export type Provider = (typeof PROVIDERS)[number];
+
+/** Friendly aliases accepted in PPMA_PROVIDER, normalised to the pi provider id. */
+const PROVIDER_ALIASES: Record<string, Provider> = {
+  glm: "zai",
+  zhipu: "zai",
+};
+
+/** Env var carrying each provider's API key. */
+const PROVIDER_API_KEY_ENV: Record<Provider, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
+  zai: "ZAI_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+};
+
+/** Default model id per provider, used when PPMA_MODEL is unset. */
+const PROVIDER_DEFAULT_MODEL: Record<Provider, string> = {
+  anthropic: "claude-sonnet-4-6",
+  deepseek: "deepseek-v4-pro",
+  zai: "glm-4.7",
+  openrouter: "anthropic/claude-sonnet-4.6",
+};
+
 export interface Config {
-  /** Anthropic API key for the pi default provider. */
-  anthropicApiKey: string;
-  /** Model id passed to pi's getModel(). */
+  /** Selected LLM provider (the id passed to pi's getBuiltinModel()). */
+  provider: Provider;
+  /** API key for the selected provider. */
+  apiKey: string;
+  /** Model id passed to pi's getBuiltinModel(). */
   model: string;
 
   /** `ppm` binary (path or name on PATH). */
@@ -81,14 +109,27 @@ function oneOf<T extends string>(env: Env, key: string, allowed: readonly T[], f
   );
 }
 
+/** Resolve PPMA_PROVIDER (with aliases) to a supported provider id. */
+function resolveProvider(env: Env): Provider {
+  const raw = env.PPMA_PROVIDER;
+  if (!raw) return "anthropic";
+  const normalised = PROVIDER_ALIASES[raw.toLowerCase()] ?? raw.toLowerCase();
+  if ((PROVIDERS as readonly string[]).includes(normalised)) return normalised as Provider;
+  throw new ConfigError(
+    `Environment variable PPMA_PROVIDER must be one of ${PROVIDERS.join("|")} (alias glm/zhipu=zai), got: ${raw}`,
+  );
+}
+
 /**
  * Build a {@link Config} from a process environment. Throws {@link ConfigError}
  * if a required variable is missing or malformed.
  */
 export function loadConfig(env: Env = process.env): Config {
+  const provider = resolveProvider(env);
   return {
-    anthropicApiKey: required(env, "ANTHROPIC_API_KEY"),
-    model: optional(env, "PPMA_MODEL", "claude-sonnet-4-6"),
+    provider,
+    apiKey: required(env, PROVIDER_API_KEY_ENV[provider]),
+    model: optional(env, "PPMA_MODEL", PROVIDER_DEFAULT_MODEL[provider]),
 
     ppmBin: optional(env, "PPMA_PPM_BIN", "ppm"),
     ppmMemoryRoot: optional(env, "PPM_MEMORY_ROOT", "./memory"),

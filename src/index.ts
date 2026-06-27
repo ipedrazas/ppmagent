@@ -16,7 +16,9 @@ import { TelegramClient } from "./telegram/client.ts";
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger({ level: config.logLevel, format: config.logFormat });
-  logger.withMetadata({ model: config.model, logLevel: config.logLevel }).info("ppmagent starting");
+  logger
+    .withMetadata({ provider: config.provider, model: config.model, logLevel: config.logLevel })
+    .info("ppmagent starting");
 
   const holder: { bot?: TelegramBot } = {};
   const built = buildAgent(config, () => holder.bot?.getActiveProject(), { logger });

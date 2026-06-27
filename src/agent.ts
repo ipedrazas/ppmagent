@@ -1,6 +1,6 @@
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import { getModel } from "@earendil-works/pi-ai/compat";
+import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import type { Config } from "./config.ts";
 import { type Logger, nullLogger } from "./logger.ts";
 import { makeTransformContext } from "./memory/context.ts";
@@ -20,11 +20,12 @@ Operating rules:
 - Keep entries atomic and typed. Prefer specific types over note.`;
 
 /**
- * Resolve a model. `getModel` is strongly typed over the built-in catalog; the
- * cast lets a config-supplied id flow through (it is a runtime catalog lookup).
+ * Resolve a model from a provider id + model id. `getBuiltinModel` is strongly
+ * typed over the built-in catalog; the casts let config-supplied values flow
+ * through (it is a runtime catalog lookup).
  */
-function resolveModel(modelId: string): Model<any> {
-  return getModel("anthropic", modelId as "claude-sonnet-4-6");
+function resolveModel(provider: string, modelId: string): Model<any> {
+  return getBuiltinModel(provider as "anthropic", modelId as "claude-sonnet-4-6");
 }
 
 export interface BuiltAgent {
@@ -36,6 +37,11 @@ export interface BuiltAgent {
 export interface BuildAgentOverrides {
   /** Inject a model (e.g. a faux provider in tests) instead of resolving from config. */
   model?: Model<any>;
+  /**
+   * Inject the stream function (e.g. a faux provider backed by a `Models`
+   * collection in tests). When omitted, pi-agent-core's default is used.
+   */
+  streamFn?: StreamFn;
   /** Root logger; child loggers are derived for the clients and tool tracing. */
   logger?: Logger;
 }
@@ -64,7 +70,7 @@ function traceTools(agent: Agent, logger: Logger): () => void {
 
 /**
  * Wire the agent: memory + tracker + ask_user tools, the `ppm context`
- * injection seam, and the Anthropic model. `getActiveProject` is supplied by
+ * injection seam, and the configured provider's model. `getActiveProject` is supplied by
  * the caller (the Telegram adapter tracks it per chat).
  */
 export function buildAgent(
@@ -87,7 +93,7 @@ export function buildAgent(
   const agent = new Agent({
     initialState: {
       systemPrompt: SYSTEM_PROMPT,
-      model: overrides.model ?? resolveModel(config.model),
+      model: overrides.model ?? resolveModel(config.provider, config.model),
       tools,
     },
     transformContext: makeTransformContext({
@@ -95,7 +101,8 @@ export function buildAgent(
       recent: config.contextRecent,
       getActiveProject,
     }),
-    getApiKey: () => config.anthropicApiKey,
+    streamFn: overrides.streamFn,
+    getApiKey: () => config.apiKey,
   });
 
   traceTools(agent, logger);

@@ -12,7 +12,7 @@ RUN apk add --no-cache git \
 # ── Stage 2: build the `dbxcli` tracker CLI from source ──────────────────────
 # dbxcli is a Rust binary (reqwest + rustls-tls — no OpenSSL/system TLS deps).
 FROM rust:1-bookworm AS dbxcli-builder
-ARG DBXCLI_VERSION=v0.1.10
+ARG DBXCLI_VERSION=v0.1.12
 RUN cargo install --git https://github.com/tavon-ai/dbxcli --tag "${DBXCLI_VERSION}" --locked --root /out
 # → /out/bin/dbxcli
 

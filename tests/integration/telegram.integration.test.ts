@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { FauxProviderRegistration } from "@earendil-works/pi-ai";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
+import type { FauxProviderHandle } from "@earendil-works/pi-ai";
+import {
+  createModels,
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+} from "@earendil-works/pi-ai";
 import { buildAgent } from "../../src/agent.ts";
 import type { Config } from "../../src/config.ts";
 import { PpmClient } from "../../src/memory/ppm.ts";
@@ -19,7 +24,8 @@ const CHAT = 42;
 
 function testConfig(root: string): Config {
   return {
-    anthropicApiKey: "test-key",
+    provider: "anthropic",
+    apiKey: "test-key",
     model: "faux-1",
     ppmBin: ppmBin ?? "ppm",
     ppmMemoryRoot: root,
@@ -52,18 +58,22 @@ function fakeClient(): { client: TelegramClient; sent: Array<{ chatId: number; t
 describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
   let root: string;
   let ppm: PpmClient;
-  let faux: FauxProviderRegistration;
+  let faux: FauxProviderHandle;
+  let models: ReturnType<typeof createModels>;
+  const fauxStream: StreamFn = (model, context, options) =>
+    models.streamSimple(model, context, options);
 
   beforeEach(async () => {
     root = mkdtempSync(join(import.meta.dir, ".tgroot-"));
     ppm = new PpmClient({ bin: ppmBin ?? "ppm", root });
     await ppm.run(["init"]);
     await ppm.projectCreate(PROJECT, "Onboarding drop-off");
-    faux = registerFauxProvider({ provider: "faux", models: [{ id: "faux-1" }] });
+    faux = fauxProvider({ provider: "faux", models: [{ id: "faux-1" }] });
+    models = createModels();
+    models.setProvider(faux.provider);
   });
 
   afterEach(() => {
-    faux.unregister();
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
@@ -72,6 +82,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
     const holder: { bot?: TelegramBot } = {};
     const built = buildAgent(config, () => holder.bot?.getActiveProject(), {
       model: faux.getModel(),
+      streamFn: fauxStream,
     });
     const { client, sent } = fakeClient();
     const bot = new TelegramBot(config, built, { client, store });
