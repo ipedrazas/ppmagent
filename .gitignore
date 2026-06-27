@@ -141,3 +141,21 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+plans/
+
+# ─── ppmagent ───
+# Runtime memory workspace (managed by the ppm CLI; not source).
+/memory/
+# Bun
+.bun/
+
+# Integration-test temp roots
+tests/**/.ppmroot-*
+tests/**/.agentroot-*
+tests/**/.compactroot-*
+
+# Durable session
+/.session/
+tests/**/.sessroot-*
+tests/**/.tgroot-*

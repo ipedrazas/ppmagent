@@ -1,0 +1,104 @@
+import { Agent } from "@earendil-works/pi-agent-core";
+import type { Model } from "@earendil-works/pi-ai";
+import { getModel } from "@earendil-works/pi-ai/compat";
+import type { Config } from "./config.ts";
+import { type Logger, nullLogger } from "./logger.ts";
+import { makeTransformContext } from "./memory/context.ts";
+import { PpmClient } from "./memory/ppm.ts";
+import { buildMemoryTools } from "./memory/tools.ts";
+import { buildAskUserTool } from "./tools/ask-user.ts";
+import { DataboxClient } from "./tracker/databox.ts";
+import { buildTrackerTools } from "./tracker/tools.ts";
+
+export const SYSTEM_PROMPT = `You are a Project / Product-Owner agent. You turn vague requests into well-scoped tracker tasks and keep structured, human-readable memory.
+
+Operating rules:
+- ORIENT before acting: call memory_list before reading specific entries.
+- CLARIFY before creating: if a request is under-specified (missing acceptance criteria, target metric, or owner), call ask_user with ONE question and stop. Never batch ask_user with other tools. Never guess a task into the backlog.
+- Memory holds WHY; the tracker holds WHAT + STATUS. After tracker_create_task, record the rationale with memory_write type=task (ref + url), never the status.
+- Resolve open questions with memory_write type=question resolve:true once answered.
+- Keep entries atomic and typed. Prefer specific types over note.`;
+
+/**
+ * Resolve a model. `getModel` is strongly typed over the built-in catalog; the
+ * cast lets a config-supplied id flow through (it is a runtime catalog lookup).
+ */
+function resolveModel(modelId: string): Model<any> {
+  return getModel("anthropic", modelId as "claude-sonnet-4-6");
+}
+
+export interface BuiltAgent {
+  agent: Agent;
+  ppm: PpmClient;
+  databox: DataboxClient;
+}
+
+export interface BuildAgentOverrides {
+  /** Inject a model (e.g. a faux provider in tests) instead of resolving from config. */
+  model?: Model<any>;
+  /** Root logger; child loggers are derived for the clients and tool tracing. */
+  logger?: Logger;
+}
+
+/**
+ * Subscribe a logger to the agent's tool-execution events: one `debug` line when
+ * a tool starts and one when it ends (escalated to `warn` when the tool errored).
+ * Returns the unsubscribe handle (left attached for the process lifetime).
+ */
+function traceTools(agent: Agent, logger: Logger): () => void {
+  const log = logger.child().withContext({ component: "agent" });
+  return agent.subscribe((event) => {
+    if (event.type === "tool_execution_start") {
+      log.withMetadata({ tool: event.toolName, toolCallId: event.toolCallId }).debug("tool start");
+    } else if (event.type === "tool_execution_end") {
+      const line = log.withMetadata({
+        tool: event.toolName,
+        toolCallId: event.toolCallId,
+        isError: event.isError,
+      });
+      if (event.isError) line.warn("tool end (error)");
+      else line.debug("tool end");
+    }
+  });
+}
+
+/**
+ * Wire the agent: memory + tracker + ask_user tools, the `ppm context`
+ * injection seam, and the Anthropic model. `getActiveProject` is supplied by
+ * the caller (the Telegram adapter tracks it per chat).
+ */
+export function buildAgent(
+  config: Config,
+  getActiveProject: () => string | undefined,
+  overrides: BuildAgentOverrides = {},
+): BuiltAgent {
+  const logger = overrides.logger ?? nullLogger;
+  const ppm = new PpmClient({ bin: config.ppmBin, root: config.ppmMemoryRoot, logger });
+  const databox = new DataboxClient({
+    bin: config.dbxcliBin,
+    config: config.dbxcliConfig,
+    dataset: config.dbxcliDataset,
+    createAction: config.dbxcliCreateAction,
+    logger,
+  });
+
+  const tools = [...buildMemoryTools(ppm), ...buildTrackerTools(databox), buildAskUserTool(ppm)];
+
+  const agent = new Agent({
+    initialState: {
+      systemPrompt: SYSTEM_PROMPT,
+      model: overrides.model ?? resolveModel(config.model),
+      tools,
+    },
+    transformContext: makeTransformContext({
+      ppm,
+      recent: config.contextRecent,
+      getActiveProject,
+    }),
+    getApiKey: () => config.anthropicApiKey,
+  });
+
+  traceTools(agent, logger);
+
+  return { agent, ppm, databox };
+}

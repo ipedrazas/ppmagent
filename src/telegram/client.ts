@@ -1,0 +1,68 @@
+/** Minimal Telegram Bot API client over fetch — just what the PoC needs. */
+
+import { type Logger, nullLogger } from "../logger.ts";
+
+export interface InboundMessage {
+  chatId: number;
+  text: string;
+}
+
+export interface Update {
+  updateId: number;
+  message?: InboundMessage;
+}
+
+/** Injectable fetch so the client is unit-testable without a network. */
+export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+
+export class TelegramClient {
+  private readonly base: string;
+  private readonly log: Logger;
+
+  constructor(
+    token: string,
+    private readonly fetchImpl: FetchLike = fetch,
+    logger: Logger = nullLogger,
+  ) {
+    this.base = `https://api.telegram.org/bot${token}`;
+    this.log = logger.child().withContext({ component: "telegram-client" });
+  }
+
+  /** Long-poll for updates from `offset`. Returns normalized text messages only. */
+  async getUpdates(offset: number, timeoutSec = 25): Promise<Update[]> {
+    const url = `${this.base}/getUpdates?offset=${offset}&timeout=${timeoutSec}`;
+    const res = await this.fetchImpl(url);
+    const body = (await res.json()) as {
+      ok: boolean;
+      result?: Array<{
+        update_id: number;
+        message?: { chat?: { id: number }; text?: string };
+      }>;
+    };
+    if (!body.ok || !body.result) {
+      if (!body.ok) this.log.withMetadata({ offset }).warn("getUpdates returned ok: false");
+      return [];
+    }
+    return body.result.map((u) => {
+      const chatId = u.message?.chat?.id;
+      const text = u.message?.text;
+      return {
+        updateId: u.update_id,
+        message: chatId !== undefined && text !== undefined ? { chatId, text } : undefined,
+      };
+    });
+  }
+
+  async sendMessage(chatId: number, text: string): Promise<void> {
+    const res = await this.fetchImpl(`${this.base}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text }),
+    });
+    if (!res.ok) {
+      this.log
+        .withMetadata({ chatId, status: res.status })
+        .warn("sendMessage returned a non-2xx status");
+    }
+  }
+}

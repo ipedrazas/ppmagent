@@ -1,0 +1,70 @@
+# Taskfile for ppmagent — https://taskfile.dev
+# Run `task` (or `task --list`) to see available tasks.
+#
+# Tasks invoke the local binaries directly (./node_modules/.bin) rather than
+# `bun run <script>`, so they work both in CI and inside restrictive local
+# sandboxes. The equivalent `package.json` scripts exist for direct `bun run`.
+version: "3"
+
+vars:
+  BIN: ./node_modules/.bin
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  install:
+    desc: Install dependencies (frozen lockfile)
+    cmds:
+      - bun install --frozen-lockfile
+
+  install:dev:
+    desc: Install dependencies and update the lockfile if needed
+    cmds:
+      - bun install
+
+  typecheck:
+    desc: Typecheck with tsc (no emit)
+    cmds:
+      - "{{.BIN}}/tsc --noEmit"
+
+  lint:
+    desc: Lint and format-check with Biome
+    cmds:
+      - "{{.BIN}}/biome check ."
+
+  format:
+    desc: Auto-format and apply safe fixes with Biome
+    cmds:
+      - "{{.BIN}}/biome check --write ."
+
+  test:
+    desc: Run the test suite
+    cmds:
+      - bun test
+
+  dev:
+    desc: Run the agent in watch mode
+    cmds:
+      - bun --watch src/index.ts
+
+  start:
+    desc: Run the agent
+    cmds:
+      - bun src/index.ts
+
+  check:
+    desc: Typecheck + lint + test (fast local gate)
+    cmds:
+      - task: typecheck
+      - task: lint
+      - task: test
+
+  ci:
+    desc: What CI runs — install then full check
+    cmds:
+      - task: install
+      - task: check

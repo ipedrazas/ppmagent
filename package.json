@@ -1,0 +1,29 @@
+{
+  "name": "ppmagent",
+  "version": "0.1.0",
+  "description": "A Project / Product-Owner agent (pi runtime) with structured, human-readable memory over the ppm CLI and a DataboxPPM tracker, speaking Telegram.",
+  "license": "MIT",
+  "type": "module",
+  "module": "src/index.ts",
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "lint": "biome check .",
+    "format": "biome format --write ."
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.80.2",
+    "@earendil-works/pi-ai": "0.80.2",
+    "loglayer": "^9.3.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}

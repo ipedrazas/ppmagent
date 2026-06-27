@@ -1,0 +1,29 @@
+# Keep the build context small and free of host-only / secret files.
+.git
+.github
+node_modules
+dist
+coverage
+
+# Local-only planning docs (the agent must not see these at runtime).
+plans
+
+# Secrets & local env
+.env
+.env.*
+!.env.example
+
+# Tests aren't needed in the image
+tests
+
+# Editor / OS cruft
+.vscode
+.idea
+.DS_Store
+*.log
+
+# Docker/compose files themselves
+Dockerfile
+.dockerignore
+compose.yaml
+docker-compose.yml
