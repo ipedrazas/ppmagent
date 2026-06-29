@@ -33,6 +33,8 @@ export interface CreateTaskInput {
    * path (the simulator validates params but does not apply pins).
    */
   team?: string;
+  /** Optional project id. When provided the issue is created under that project. */
+  project_id?: string;
 }
 
 /** A tracker project in neutral vocabulary. */
@@ -196,12 +198,14 @@ export function buildCreateParams(input: CreateTaskInput): {
   title: string;
   team_id?: string;
   description?: string;
+  project_id?: string;
 } {
-  const params: { title: string; team_id?: string; description?: string } = {
+  const params: { title: string; team_id?: string; description?: string; project_id?: string } = {
     title: input.title,
   };
   if (input.team) params.team_id = input.team;
   if (input.description) params.description = input.description;
+  if (input.project_id) params.project_id = input.project_id;
   return params;
 }
 
