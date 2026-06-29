@@ -10,8 +10,22 @@ import {
 import type { CompactionOutcome, Summarizer } from "../compaction.ts";
 import type { Config } from "../config.ts";
 import { type Logger, nullLogger } from "../logger.ts";
-import { type SessionState, type SessionStore, newSession } from "../session/store.ts";
+import { type SessionState, type SessionStore, newSession, shortId } from "../session/store.ts";
 import type { TelegramClient } from "./client.ts";
+
+/** One-line label for a session in listings: `<short> "name" — N msgs, project`. */
+function sessionLabel(s: {
+  sessionId: string;
+  name?: string;
+  activeProject?: string;
+  messageCount: number;
+}): string {
+  const parts = [shortId(s.sessionId)];
+  if (s.name) parts.push(`"${s.name}"`);
+  const meta = [`${s.messageCount} msgs`];
+  if (s.activeProject) meta.push(s.activeProject);
+  return `${parts.join(" ")} — ${meta.join(", ")}`;
+}
 
 export interface TelegramBotDeps {
   client: TelegramClient;
@@ -85,6 +99,15 @@ export class TelegramBot {
   }
 
   /**
+   * Make `state` the live session: swap it in and point the agent's transcript at
+   * its messages. Used by `/new` and `/resume`. The caller persists afterwards.
+   */
+  private switchTo(state: SessionState): void {
+    this.state = state;
+    this.built.agent.state.messages = state.messages;
+  }
+
+  /**
    * Compact the live transcript when it crosses `threshold` tokens, flushing a
    * durable checkpoint to memory first, and assign the result back to the agent.
    * Shared by the post-turn auto-compaction and the manual `/compact` command
@@ -121,6 +144,43 @@ export class TelegramBot {
       `Context: ~${used.toLocaleString()} tokens across ${messages.length} messages ` +
       `(compaction at ${threshold.toLocaleString()}, ${pct}%).`
     );
+  }
+
+  /** Details of the current session, plus a count of others on disk. */
+  private sessionReport(): string {
+    const s = this.state;
+    const others = this.deps.store.list().filter((x) => x.sessionId !== s.sessionId).length;
+    const lines = [
+      `Session ${shortId(s.sessionId)}${s.name ? ` "${s.name}"` : ""}`,
+      `Project: ${s.activeProject ?? "(none)"}`,
+      `Messages: ${this.built.agent.state.messages.length}`,
+    ];
+    if (others > 0)
+      lines.push(`${others} other session${others === 1 ? "" : "s"} — /resume to list.`);
+    return lines.join("\n");
+  }
+
+  /**
+   * `/resume` with no argument lists saved sessions; with an id/name it switches
+   * to that session. Returns the reply text. Persists the outgoing session first
+   * (if non-empty) so no in-progress transcript is lost on the swap.
+   */
+  private resume(arg: string): string {
+    if (!arg) {
+      const sessions = this.deps.store.list();
+      if (sessions.length === 0) return "No saved sessions yet.";
+      const lines = sessions.map(
+        (s) => `• ${sessionLabel(s)}${s.sessionId === this.state.sessionId ? " (current)" : ""}`,
+      );
+      return `Sessions:\n${lines.join("\n")}\n\nResume with /resume <id|name>.`;
+    }
+    const target = this.deps.store.find(arg);
+    if (!target) return `No session matches "${arg}".`;
+    if (target.sessionId === this.state.sessionId) return "That session is already active.";
+    if (this.built.agent.state.messages.length > 0) this.persist();
+    this.switchTo(target);
+    this.persist();
+    return `Resumed session ${shortId(target.sessionId)}${target.name ? ` "${target.name}"` : ""} (${target.messages.length} messages).`;
   }
 
   private async send(chatId: number, messages: string[]): Promise<void> {
@@ -168,6 +228,51 @@ export class TelegramBot {
       this.log
         .withMetadata({ chatId, tokensBefore: before, tokensAfter: outcome.tokensAfter })
         .info("manual compaction");
+      await this.send(chatId, [reply]);
+      return [reply];
+    }
+
+    if (trimmed === "/new" || trimmed.startsWith("/new ")) {
+      const name = trimmed.slice("/new".length).trim() || undefined;
+      // Don't persist an untouched throwaway session; keep the store tidy.
+      if (this.built.agent.state.messages.length > 0) this.persist();
+      const fresh = newSession(name);
+      // Carry the active project so memory injection still targets it — the
+      // point of a fresh transcript is to check what the agent recalls from ppm.
+      fresh.activeProject = this.state.activeProject;
+      this.switchTo(fresh);
+      this.persist();
+      const reply =
+        `Started a new session ${shortId(fresh.sessionId)}${name ? ` "${name}"` : ""}. ` +
+        `Transcript cleared${fresh.activeProject ? `, still on "${fresh.activeProject}"` : ""}; memory is untouched.`;
+      this.log.withMetadata({ chatId, sessionId: fresh.sessionId }).info("new session");
+      await this.send(chatId, [reply]);
+      return [reply];
+    }
+
+    if (trimmed.startsWith("/name")) {
+      const name = trimmed.slice("/name".length).trim();
+      const reply = name ? `Session named "${name}".` : "Usage: /name <name>";
+      if (name) {
+        this.state.name = name;
+        this.persist();
+        this.log
+          .withMetadata({ chatId, sessionId: this.state.sessionId, name })
+          .info("session named");
+      }
+      await this.send(chatId, [reply]);
+      return [reply];
+    }
+
+    if (trimmed === "/session") {
+      const reply = this.sessionReport();
+      await this.send(chatId, [reply]);
+      return [reply];
+    }
+
+    if (trimmed === "/resume" || trimmed.startsWith("/resume ")) {
+      const reply = this.resume(trimmed.slice("/resume".length).trim());
+      this.log.withMetadata({ chatId, sessionId: this.state.sessionId }).info("resume command");
       await this.send(chatId, [reply]);
       return [reply];
     }

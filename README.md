@@ -41,6 +41,16 @@ handled locally (no model call, no token cost):
 | `/project <slug>` | Switch the active project used for memory injection. |
 | `/context` | Report current context usage — estimated tokens, message count, and how close you are to the compaction threshold. |
 | `/compact` | Force a compaction now: flush a durable checkpoint to memory, then summarize the older transcript (keeps the most recent messages). |
+| `/new [name]` | Start a fresh session: clears the transcript (optionally naming it) while keeping the active project. Memory in `ppm` is untouched — the clean slate is how you check what the agent recalls from memory alone. |
+| `/name <name>` | Give the current session a human-readable label. |
+| `/session` | Show the current session: short id, name, active project, and message count. |
+| `/resume [id\|name]` | With no argument, list saved sessions. With a short id or name, switch back to that session (the current transcript is saved first). |
+
+Sessions are stored one JSON file each under the session directory (derived from
+`PPMA_SESSION_FILE`), with a `current` pointer; a pre-existing single-file
+session is migrated in automatically on first run. This makes it easy to purge a
+conversation (`/new`) and confirm the memory system still carries the project
+forward.
 
 ## Requirements
 

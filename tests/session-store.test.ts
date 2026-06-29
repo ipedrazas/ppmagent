@@ -1,39 +1,86 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { SessionStore, newSession } from "../src/session/store.ts";
+import { SessionStore, newSession, shortId } from "../src/session/store.ts";
 
 const dir = mkdtempSync(join(import.meta.dir, ".sessroot-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
+/** A fresh store rooted in its own temp subdir so tests don't cross-pollute. */
+function freshStore(label: string): SessionStore {
+  return new SessionStore(join(dir, label, "session.json"));
+}
+
 describe("SessionStore", () => {
   test("returns null before anything is saved", () => {
-    expect(new SessionStore(join(dir, "missing.json")).load()).toBeNull();
+    expect(freshStore("empty").load()).toBeNull();
   });
 
-  test("round-trips a session through disk", () => {
-    const store = new SessionStore(join(dir, "nested", "session.json"));
-    const state = {
-      sessionId: "sid-1",
-      activeProject: "onboarding",
-      messages: [{ role: "user" as const, content: "hi", timestamp: 1 }],
-    };
+  test("round-trips the current session through disk", () => {
+    const store = freshStore("roundtrip");
+    const state = { ...newSession("kickoff"), activeProject: "onboarding" };
     store.save(state);
-    expect(store.load()).toEqual(state);
+    const loaded = store.load();
+    expect(loaded?.sessionId).toBe(state.sessionId);
+    expect(loaded?.name).toBe("kickoff");
+    expect(loaded?.activeProject).toBe("onboarding");
+  });
+
+  test("keeps multiple sessions and lists them newest-first", async () => {
+    const store = freshStore("multi");
+    const a = newSession("alpha");
+    const b = newSession("beta");
+    store.save(a); // a saved first → older updatedAt
+    await Bun.sleep(2); // guarantee a distinct updatedAt so ordering is deterministic
+    store.save(b); // b is now current
+    const list = store.list();
+    expect(list.map((s) => s.name)).toEqual(["beta", "alpha"]);
+    // The most recent save is the current session.
+    expect(store.load()?.sessionId).toBe(b.sessionId);
+  });
+
+  test("resolves a session by short handle and by name", () => {
+    const store = freshStore("find");
+    const s = newSession("metrics-review");
+    store.save(s);
+    store.save(newSession("other")); // move current away from s
+    expect(store.find(shortId(s.sessionId))?.sessionId).toBe(s.sessionId);
+    expect(store.find("metrics-review")?.sessionId).toBe(s.sessionId);
+    expect(store.find("nope")).toBeNull();
+  });
+
+  test("migrates a legacy single-file session on first load", () => {
+    mkdirSync(join(dir, "legacy"), { recursive: true });
+    // Pre-multi-session shape: no createdAt/updatedAt, no sessions/ dir.
+    const legacy = { sessionId: "legacy-1", activeProject: "onboarding", messages: [] };
+    writeFileSync(join(dir, "legacy", "session.json"), JSON.stringify(legacy));
+    const store = freshStore("legacy");
+    const loaded = store.load();
+    expect(loaded?.sessionId).toBe("legacy-1");
+    expect(loaded?.activeProject).toBe("onboarding");
+    // It is now a first-class session in the store.
+    expect(store.list().map((s) => s.sessionId)).toContain("legacy-1");
   });
 
   test("treats malformed JSON as no session", () => {
-    const path = join(dir, "bad.json");
-    writeFileSync(path, "{not json");
-    expect(new SessionStore(path).load()).toBeNull();
+    const store = freshStore("bad");
+    store.save(newSession()); // create the sessions/ dir + pointer
+    writeFileSync(join(dir, "bad", "current"), "does-not-exist");
+    expect(store.load()).toBeNull();
   });
 });
 
 describe("newSession", () => {
-  test("produces a fresh id and empty transcript", () => {
+  test("produces a fresh id, empty transcript, and timestamps", () => {
     const a = newSession();
     expect(a.sessionId.length).toBeGreaterThan(0);
     expect(a.messages).toEqual([]);
     expect(a.activeProject).toBeUndefined();
+    expect(a.createdAt).toBeGreaterThan(0);
+    expect(a.updatedAt).toBeGreaterThan(0);
+  });
+
+  test("accepts an optional name", () => {
+    expect(newSession("planning").name).toBe("planning");
   });
 });

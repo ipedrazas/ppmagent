@@ -135,6 +135,54 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
     expect(after).toBeLessThan(before);
   });
 
+  test("/new clears the transcript but keeps the active project and memory", async () => {
+    faux.setResponses([fauxAssistantMessage("Noted.")]);
+    const store = new SessionStore(join(root, "session.json"));
+    const { bot } = makeBot(store);
+    await bot.handleMessage(CHAT, "/project onboarding");
+    await bot.handleMessage(CHAT, "some earlier context");
+    expect(store.load()?.messages.length ?? 0).toBeGreaterThan(0);
+
+    const replies = await bot.handleMessage(CHAT, "/new");
+    expect(replies[0]).toContain("new session");
+    // Transcript wiped, project retained → memory injection still targets it.
+    expect(store.load()?.messages.length).toBe(0);
+    expect(bot.getActiveProject()).toBe(PROJECT);
+    // The earlier session is still on disk, resumable.
+    expect(store.list().length).toBe(2);
+  });
+
+  test("/name labels the current session and /session reports it", async () => {
+    const store = new SessionStore(join(root, "session.json"));
+    const { bot } = makeBot(store);
+    await bot.handleMessage(CHAT, "/project onboarding");
+    await bot.handleMessage(CHAT, "/name metrics-review");
+    const replies = await bot.handleMessage(CHAT, "/session");
+    expect(replies[0]).toContain("metrics-review");
+    expect(replies[0]).toContain("Project: onboarding");
+    expect(store.find("metrics-review")?.name).toBe("metrics-review");
+  });
+
+  test("/resume lists sessions and switches back to a named one", async () => {
+    faux.setResponses([fauxAssistantMessage("Noted.")]);
+    const store = new SessionStore(join(root, "session.json"));
+    const { bot } = makeBot(store);
+    await bot.handleMessage(CHAT, "/name first");
+    await bot.handleMessage(CHAT, "remember this");
+    const firstId = store.find("first")?.sessionId;
+    await bot.handleMessage(CHAT, "/new second");
+
+    const list = await bot.handleMessage(CHAT, "/resume");
+    expect(list[0]).toContain("first");
+    expect(list[0]).toContain("second");
+
+    const switched = await bot.handleMessage(CHAT, "/resume first");
+    expect(switched[0]).toContain("Resumed");
+    // The store's current pointer now resolves back to the first session.
+    expect(store.load()?.sessionId).toBe(firstId);
+    expect(bot.getActiveProject()).toBe(store.find("first")?.activeProject);
+  });
+
   test("a vague message produces a clarifying question and records it", async () => {
     faux.setResponses([
       fauxAssistantMessage([
