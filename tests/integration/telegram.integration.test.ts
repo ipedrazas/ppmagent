@@ -10,6 +10,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { buildAgent } from "../../src/agent.ts";
+import { DEFAULT_KEEP_RECENT } from "../../src/compaction.ts";
 import type { Config } from "../../src/config.ts";
 import { PpmClient } from "../../src/memory/ppm.ts";
 import { SessionStore } from "../../src/session/store.ts";
@@ -95,6 +96,43 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
     expect(replies[0]).toContain("onboarding");
     expect(bot.getActiveProject()).toBe(PROJECT);
     expect(sent.at(-1)?.text).toContain("onboarding");
+  });
+
+  test("/context reports token usage against the threshold", async () => {
+    const store = new SessionStore(join(root, "session.json"));
+    const { bot, sent } = makeBot(store);
+    const replies = await bot.handleMessage(CHAT, "/context");
+    expect(replies[0]).toMatch(/Context: ~[\d,]+ tokens across \d+ messages/);
+    expect(replies[0]).toContain("compaction at");
+    expect(sent.at(-1)?.text).toContain("Context:");
+  });
+
+  test("/compact on a short transcript reports nothing to compact", async () => {
+    faux.setResponses([fauxAssistantMessage("Noted.")]);
+    const store = new SessionStore(join(root, "session.json"));
+    const { bot } = makeBot(store);
+    await bot.handleMessage(CHAT, "/project onboarding");
+    await bot.handleMessage(CHAT, "a single short turn");
+    const replies = await bot.handleMessage(CHAT, "/compact");
+    expect(replies[0]).toContain("Nothing to compact yet");
+  });
+
+  test("/compact summarizes a long transcript and shrinks it", async () => {
+    const store = new SessionStore(join(root, "session.json"));
+    const { bot } = makeBot(store);
+    await bot.handleMessage(CHAT, "/project onboarding");
+    // Build a transcript longer than the keep-recent tail so compaction bites.
+    for (let i = 0; i < 6; i++) {
+      faux.setResponses([fauxAssistantMessage(`Acknowledged turn ${i} with some detail.`)]);
+      await bot.handleMessage(CHAT, `message number ${i} with enough text to matter`);
+    }
+    const before = store.load()?.messages.length ?? 0;
+    expect(before).toBeGreaterThan(DEFAULT_KEEP_RECENT);
+
+    const replies = await bot.handleMessage(CHAT, "/compact");
+    expect(replies[0]).toContain("Compacted:");
+    const after = store.load()?.messages.length ?? 0;
+    expect(after).toBeLessThan(before);
   });
 
   test("a vague message produces a clarifying question and records it", async () => {

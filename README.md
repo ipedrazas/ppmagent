@@ -31,6 +31,17 @@ Telegram ⇄ Agent (pi runtime)
 > Telegram bot token and Anthropic key (and the first real, non-simulated
 > tracker create). See [`plans/implementation-plan.md`](plans/implementation-plan.md).
 
+## Telegram commands
+
+Any message that isn't one of these is handled as an agent turn. Commands are
+handled locally (no model call, no token cost):
+
+| Command | What it does |
+|---|---|
+| `/project <slug>` | Switch the active project used for memory injection. |
+| `/context` | Report current context usage — estimated tokens, message count, and how close you are to the compaction threshold. |
+| `/compact` | Force a compaction now: flush a durable checkpoint to memory, then summarize the older transcript (keeps the most recent messages). |
+
 ## Requirements
 
 - [Bun](https://bun.sh) ≥ 1.1

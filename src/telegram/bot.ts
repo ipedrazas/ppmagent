@@ -1,7 +1,13 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { BuiltAgent } from "../agent.ts";
-import { DEFAULT_KEEP_RECENT, maybeCompact, placeholderSummarizer } from "../compaction.ts";
-import type { Summarizer } from "../compaction.ts";
+import {
+  DEFAULT_KEEP_RECENT,
+  contextTokens,
+  maybeCompact,
+  placeholderSummarizer,
+  resolveThreshold,
+} from "../compaction.ts";
+import type { CompactionOutcome, Summarizer } from "../compaction.ts";
 import type { Config } from "../config.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import { type SessionState, type SessionStore, newSession } from "../session/store.ts";
@@ -78,6 +84,45 @@ export class TelegramBot {
     this.deps.store.save(this.state);
   }
 
+  /**
+   * Compact the live transcript when it crosses `threshold` tokens, flushing a
+   * durable checkpoint to memory first, and assign the result back to the agent.
+   * Shared by the post-turn auto-compaction and the manual `/compact` command
+   * (which forces an attempt by passing a threshold of 1).
+   */
+  private async compact(threshold: number): Promise<CompactionOutcome> {
+    const outcome = await maybeCompact({
+      messages: this.built.agent.state.messages,
+      policy: { threshold, keepRecent: DEFAULT_KEEP_RECENT },
+      summarize: this.summarize,
+      flush: async () => {
+        if (this.state.activeProject) {
+          await this.built.ppm.write([
+            "conversation",
+            "add",
+            this.state.activeProject,
+            "--content",
+            "Compaction checkpoint.",
+          ]);
+        }
+      },
+    });
+    if (outcome.compacted) this.built.agent.state.messages = outcome.messages;
+    return outcome;
+  }
+
+  /** Human-readable snapshot of context usage vs. the compaction threshold. */
+  private contextReport(): string {
+    const messages = this.built.agent.state.messages;
+    const used = contextTokens(messages);
+    const threshold = resolveThreshold(this.config.compactionTokenThreshold);
+    const pct = Math.round((used / threshold) * 100);
+    return (
+      `Context: ~${used.toLocaleString()} tokens across ${messages.length} messages ` +
+      `(compaction at ${threshold.toLocaleString()}, ${pct}%).`
+    );
+  }
+
   private async send(chatId: number, messages: string[]): Promise<void> {
     for (const text of messages) await this.deps.client.sendMessage(chatId, text);
   }
@@ -97,6 +142,32 @@ export class TelegramBot {
         this.persist();
         this.log.withMetadata({ chatId, project: slug }).info("active project switched");
       }
+      await this.send(chatId, [reply]);
+      return [reply];
+    }
+
+    if (trimmed === "/context") {
+      const reply = this.contextReport();
+      this.log.withMetadata({ chatId }).info("context reported");
+      await this.send(chatId, [reply]);
+      return [reply];
+    }
+
+    if (trimmed === "/compact") {
+      const before = contextTokens(this.built.agent.state.messages);
+      const beforeCount = this.built.agent.state.messages.length;
+      const outcome = await this.compact(1); // threshold 1 = always attempt
+      this.persist();
+      // Message-count reduction is the true signal: the token estimate is
+      // dominated by the fixed system prompt + tool schemas, so collapsing a few
+      // short messages can leave the token total essentially unchanged.
+      const reply =
+        outcome.messages.length < beforeCount
+          ? `Compacted: ${beforeCount} → ${outcome.messages.length} messages (~${before.toLocaleString()} → ~${outcome.tokensAfter.toLocaleString()} tokens).`
+          : `Nothing to compact yet — ${beforeCount} messages (~${before.toLocaleString()} tokens). Compaction keeps the ${DEFAULT_KEEP_RECENT} most recent.`;
+      this.log
+        .withMetadata({ chatId, tokensBefore: before, tokensAfter: outcome.tokensAfter })
+        .info("manual compaction");
       await this.send(chatId, [reply]);
       return [reply];
     }
@@ -124,27 +195,8 @@ export class TelegramBot {
     const assistant = lastAssistantText(this.built.agent.state.messages);
     if (assistant) outbound.push(assistant);
 
-    const outcome = await maybeCompact({
-      messages: this.built.agent.state.messages,
-      policy: {
-        threshold: this.config.compactionTokenThreshold,
-        keepRecent: DEFAULT_KEEP_RECENT,
-      },
-      summarize: this.summarize,
-      flush: async () => {
-        if (this.state.activeProject) {
-          await this.built.ppm.write([
-            "conversation",
-            "add",
-            this.state.activeProject,
-            "--content",
-            "Compaction checkpoint.",
-          ]);
-        }
-      },
-    });
+    const outcome = await this.compact(this.config.compactionTokenThreshold);
     if (outcome.compacted) {
-      this.built.agent.state.messages = outcome.messages;
       turnLog.withMetadata({ messages: outcome.messages.length }).info("transcript compacted");
     }
 
