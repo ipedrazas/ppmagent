@@ -20,12 +20,9 @@ services:
       # Keep memory on the mounted volume regardless of what .env says.
       PPM_MEMORY_ROOT: /app/memory
     volumes:
-      - memory:/app/memory
+      - .memory:/app/memory
       # ── dbxcli (tracker) is baked into the image; it still needs the
       #    DataboxPPM config/token at runtime. Supply the token via .env, or
       #    mount a config file and point PPMA_DBXCLI_CONFIG at it in .env:
       # - ${HOME}/Workspace/github.com/tavon/ppm-config.json:/app/ppm-config.json:ro
       #   then set in .env:  PPMA_DBXCLI_CONFIG=/app/ppm-config.json
-
-volumes:
-  memory:

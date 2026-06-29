@@ -30,7 +30,23 @@ async function main(): Promise<void> {
   });
   holder.bot = bot;
 
+  // Graceful shutdown. The container runs `bun` as PID 1, for which the kernel
+  // installs no default signal disposition — so an unhandled SIGTERM is ignored
+  // and Docker escalates to SIGKILL (exit 137). Handle the termination signals
+  // explicitly: stop the bot (which aborts the in-flight long-poll), let
+  // `start()` return, and exit 0.
+  let shuttingDown = false;
+  const shutdown = (signal: NodeJS.Signals): void => {
+    if (shuttingDown) return; // ignore a second signal while we're already winding down
+    shuttingDown = true;
+    logger.withMetadata({ signal }).info("received termination signal; shutting down");
+    bot.stop();
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+
   await bot.start();
+  logger.info("ppmagent stopped");
 }
 
 main().catch((error: unknown) => {

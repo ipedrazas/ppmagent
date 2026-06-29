@@ -71,6 +71,8 @@ function lastAssistantText(messages: AgentMessage[]): string {
 export class TelegramBot {
   private state: SessionState;
   private running = false;
+  /** Aborts the in-flight long-poll so {@link stop} returns promptly. */
+  private readonly abort = new AbortController();
   private readonly summarize: Summarizer;
   private readonly allowedChatId: number | undefined;
   private readonly log: Logger;
@@ -326,7 +328,15 @@ export class TelegramBot {
       .info("bot started; long-polling for updates");
     let offset = 0;
     while (this.running) {
-      const updates = await this.deps.client.getUpdates(offset, 25);
+      let updates: Awaited<ReturnType<TelegramClient["getUpdates"]>>;
+      try {
+        updates = await this.deps.client.getUpdates(offset, 25, this.abort.signal);
+      } catch (error) {
+        // `stop()` aborts the poll to shut down fast; that surfaces here as an
+        // abort error — exit the loop cleanly rather than crashing the process.
+        if (!this.running) break;
+        throw error;
+      }
       for (const update of updates) {
         offset = update.updateId + 1;
         const message = update.message;
@@ -347,6 +357,7 @@ export class TelegramBot {
 
   stop(): void {
     this.running = false;
+    this.abort.abort();
     this.log.info("bot stopped");
   }
 }

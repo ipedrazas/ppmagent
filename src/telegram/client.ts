@@ -28,10 +28,14 @@ export class TelegramClient {
     this.log = logger.child().withContext({ component: "telegram-client" });
   }
 
-  /** Long-poll for updates from `offset`. Returns normalized text messages only. */
-  async getUpdates(offset: number, timeoutSec = 25): Promise<Update[]> {
+  /**
+   * Long-poll for updates from `offset`. Returns normalized text messages only.
+   * Pass `signal` to abort an in-flight poll (used to shut down promptly on
+   * SIGTERM rather than blocking up to `timeoutSec`).
+   */
+  async getUpdates(offset: number, timeoutSec = 25, signal?: AbortSignal): Promise<Update[]> {
     const url = `${this.base}/getUpdates?offset=${offset}&timeout=${timeoutSec}`;
-    const res = await this.fetchImpl(url);
+    const res = await this.fetchImpl(url, { signal });
     const body = (await res.json()) as {
       ok: boolean;
       result?: Array<{
