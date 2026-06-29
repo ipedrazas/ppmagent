@@ -37,6 +37,7 @@ export function buildTrackerTools(databox: DataboxClient): AgentTool[] {
     parameters: Type.Object({
       title: Type.String(),
       description: Type.String(),
+      project_id: Type.Optional(Type.String()),
     }),
     execute: async (_id, params, signal) => {
       const task = await databox.createTask(params, { signal });
