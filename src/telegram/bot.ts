@@ -327,15 +327,23 @@ export class TelegramBot {
       .withMetadata({ allowedChatId: this.allowedChatId, activeProject: this.state.activeProject })
       .info("bot started; long-polling for updates");
     let offset = 0;
+    let backoffMs = 0;
     while (this.running) {
       let updates: Awaited<ReturnType<TelegramClient["getUpdates"]>>;
       try {
         updates = await this.deps.client.getUpdates(offset, 25, this.abort.signal);
+        backoffMs = 0; // healthy poll — reset the backoff
       } catch (error) {
         // `stop()` aborts the poll to shut down fast; that surfaces here as an
         // abort error — exit the loop cleanly rather than crashing the process.
         if (!this.running) break;
-        throw error;
+        // Any other failure (network blip, or a 409 conflict from an
+        // overlapping poller) must back off, never tight-loop: a no-delay retry
+        // pegs CPU and grows memory until the container is OOM-killed.
+        backoffMs = Math.min(backoffMs === 0 ? 1_000 : backoffMs * 2, 30_000);
+        this.log.withError(error).withMetadata({ backoffMs }).warn("poll failed; backing off");
+        await this.sleep(backoffMs);
+        continue;
       }
       for (const update of updates) {
         offset = update.updateId + 1;
@@ -353,6 +361,23 @@ export class TelegramBot {
         }
       }
     }
+  }
+
+  /** Sleep `ms`, resolving early if {@link stop} aborts in the meantime. */
+  private sleep(ms: number): Promise<void> {
+    const signal = this.abort.signal;
+    if (signal.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   stop(): void {

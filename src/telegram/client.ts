@@ -38,14 +38,19 @@ export class TelegramClient {
     const res = await this.fetchImpl(url, { signal });
     const body = (await res.json()) as {
       ok: boolean;
+      description?: string;
       result?: Array<{
         update_id: number;
         message?: { chat?: { id: number }; text?: string };
       }>;
     };
     if (!body.ok || !body.result) {
-      if (!body.ok) this.log.withMetadata({ offset }).warn("getUpdates returned ok: false");
-      return [];
+      // Telegram returns `ok: false` for conditions that resolve quickly — most
+      // notably 409 Conflict when a second poller is running (e.g. an old
+      // container instance overlapping a restart). Throw so the caller backs
+      // off instead of re-polling in a tight loop, which pegs CPU and grows
+      // memory until the process is OOM-killed.
+      throw new Error(`getUpdates failed: ${body.description ?? `ok=${body.ok}`}`);
     }
     return body.result.map((u) => {
       const chatId = u.message?.chat?.id;
