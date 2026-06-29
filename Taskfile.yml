@@ -8,6 +8,10 @@ version: "3"
 
 vars:
   BIN: ./node_modules/.bin
+  # Container image coordinates — mirror the GHCR target used by the release
+  # workflow. Override on the CLI, e.g. `task docker:build TAG=dev`.
+  IMAGE: ghcr.io/ipedrazas/ppmagent
+  TAG: latest
 
 tasks:
   default:
@@ -55,6 +59,11 @@ tasks:
     desc: Run the agent
     cmds:
       - bun src/index.ts
+
+  docker:build:
+    desc: Build the container image locally (override IMAGE/TAG as needed)
+    cmds:
+      - docker build -t {{.IMAGE}}:{{.TAG}} .
 
   check:
     desc: Typecheck + lint + test (fast local gate)
