@@ -43,6 +43,8 @@ export interface UpdateTaskInput {
   ref: string;
   title?: string;
   description?: string;
+  /** Workflow state name to move the issue to (e.g. Todo, In Progress, Done). */
+  status?: string;
   assignee_id?: string;
   /** Label UUIDs (replaces the existing set). */
   label_ids?: string[];
@@ -201,6 +203,7 @@ export function buildUpdateTaskParams(input: UpdateTaskInput): {
   issue_id: string;
   title?: string;
   description?: string;
+  status?: string;
   assignee_id?: string;
   label_ids?: string[];
   priority?: number;
@@ -210,6 +213,7 @@ export function buildUpdateTaskParams(input: UpdateTaskInput): {
     issue_id: string;
     title?: string;
     description?: string;
+    status?: string;
     assignee_id?: string;
     label_ids?: string[];
     priority?: number;
@@ -217,6 +221,7 @@ export function buildUpdateTaskParams(input: UpdateTaskInput): {
   } = { issue_id: input.ref };
   if (input.title) params.title = input.title;
   if (input.description) params.description = input.description;
+  if (input.status) params.status = input.status;
   if (input.assignee_id) params.assignee_id = input.assignee_id;
   if (input.label_ids && input.label_ids.length > 0) params.label_ids = input.label_ids;
   if (typeof input.priority === "number") params.priority = input.priority;

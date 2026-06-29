@@ -86,11 +86,19 @@ describe("buildUpdateTaskParams", () => {
     });
   });
 
-  test("maps ref to issue_id and includes project_id, labels, priority", () => {
+  test("sends a workflow status when given", () => {
+    expect(buildUpdateTaskParams({ ref: "TAV-9", status: "In Progress" })).toEqual({
+      issue_id: "TAV-9",
+      status: "In Progress",
+    });
+  });
+
+  test("maps ref to issue_id and includes status, project_id, labels, priority", () => {
     expect(
       buildUpdateTaskParams({
         ref: "TAV-9",
         description: "D",
+        status: "Done",
         project_id: "proj-uuid",
         label_ids: ["bug-uuid"],
         priority: 1,
@@ -98,6 +106,7 @@ describe("buildUpdateTaskParams", () => {
     ).toEqual({
       issue_id: "TAV-9",
       description: "D",
+      status: "Done",
       project_id: "proj-uuid",
       label_ids: ["bug-uuid"],
       priority: 1,

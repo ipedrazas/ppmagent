@@ -89,12 +89,15 @@ export function buildTrackerTools(databox: DataboxClient): AgentTool[] {
   const updateTask = defineTool({
     name: "tracker_update_task",
     description:
-      "Update a task by its reference (e.g. ENG-123). Only the fields you pass change. Move it under a project (project_id), reassign (assignee_id), replace labels (label_ids), or set priority (0 none, 1 urgent, 2 high, 3 medium, 4 low).",
+      "Update a task by its reference (e.g. ENG-123). Only the fields you pass change. Move it to a workflow state (status, e.g. Todo, In Progress, Done), file it under a project (project_id), reassign (assignee_id), replace labels (label_ids), or set priority (0 none, 1 urgent, 2 high, 3 medium, 4 low).",
     label: "Update task",
     parameters: Type.Object({
       ref: Type.String(),
       title: Type.Optional(Type.String()),
       description: Type.Optional(Type.String()),
+      status: Type.Optional(
+        Type.String({ description: "workflow state name, e.g. Todo, In Progress, Done" }),
+      ),
       project_id: Type.Optional(Type.String()),
       assignee_id: Type.Optional(Type.String()),
       label_ids: Type.Optional(Type.Array(Type.String())),
