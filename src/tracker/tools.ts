@@ -1,47 +1,108 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, toolResult } from "../tool-helpers.ts";
-import type { DataboxClient, TrackerProject, TrackerTask, TrackerTeam } from "./databox.ts";
+import {
+  type DataboxClient,
+  type DataboxRow,
+  type IssueMutationResult,
+  type ProjectMutationResult,
+  taskRef,
+} from "./databox.ts";
 
 /**
- * Neutral `tracker_*` tools. Linear/Jira vocabulary stays out of the agent so a
- * tracker swap only touches {@link DataboxClient}. The tracker is the source of
- * truth for STATUS; after creating a task the agent records ref+url+rationale in
- * memory via `memory_write type=task` (enforced by the system prompt).
+ * Neutral `tracker_*` tools. Linear/Jira vocabulary stays out of the tool names
+ * so a tracker swap only touches {@link DataboxClient}. The client passes the
+ * datasource's rows through verbatim; these renderers read whatever fields are
+ * present (so a re-added `title`/`status` shows up with no change here) and
+ * degrade gracefully when one is missing. The tracker is the source of truth for
+ * STATUS; after creating a task the agent records ref+url+rationale in memory via
+ * `memory_write type=task` (enforced by the system prompt).
  *
  * Entities: tasks (issues) and projects are read+write; teams are read-only
  * reference data (used to resolve the team for project creation).
  */
 export function buildTrackerTools(databox: DataboxClient): AgentTool[] {
-  const renderTask = (task: TrackerTask) =>
-    `${task.ref} — ${task.title}${task.status ? ` [${task.status}]` : ""}\n${task.url}`;
+  /** Coerce an unknown field to a display string ("" when absent/non-string). */
+  const str = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
 
-  const renderProject = (project: TrackerProject) => {
-    const bits = [project.status ? `[${project.status}]` : ""];
-    if (typeof project.progress === "number") bits.push(`${Math.round(project.progress * 100)}%`);
-    if (project.teams?.length) bits.push(project.teams.join(","));
-    const meta = bits.filter(Boolean).join(" ");
-    return `${project.name}${meta ? ` ${meta}` : ""}\nid: ${project.id}\n${project.url}`;
+  /** Compact one-liner for a task row: `REF — title [status]` + url. */
+  const renderTask = (row: DataboxRow): string => {
+    const head = [taskRef(row), str(row.title)].filter(Boolean).join(" — ") || "(issue)";
+    const status = str(row.status);
+    return `${head}${status ? ` [${status}]` : ""}\n${str(row.url)}`;
   };
 
-  const renderTeam = (team: TrackerTeam) =>
-    `${team.key} — ${team.name}${team.description ? `\n${team.description}` : ""}\nid: ${team.id}`;
+  /** Fuller view for a single task: adds team/project/assignee context + description. */
+  const renderTaskDetail = (row: DataboxRow): string => {
+    const head = [taskRef(row), str(row.title)].filter(Boolean).join(" — ") || "(issue)";
+    const status = str(row.status);
+    const lines = [`${head}${status ? ` [${status}]` : ""}`];
+    const ctx: string[] = [];
+    if (str(row.team)) ctx.push(`team ${str(row.team)}`);
+    if (str(row.project)) ctx.push(`project ${str(row.project)}`);
+    if (str(row.assignee)) ctx.push(`assignee ${str(row.assignee)}`);
+    if (ctx.length) lines.push(ctx.join(" · "));
+    if (str(row.url)) lines.push(str(row.url));
+    if (str(row.description)) lines.push("", str(row.description));
+    return lines.join("\n");
+  };
+
+  const renderIssueMutation = (r: IssueMutationResult): string => `${r.identifier}\n${r.url}`;
+
+  const renderProject = (row: DataboxRow): string => {
+    const bits: string[] = [];
+    if (str(row.status)) bits.push(`[${str(row.status)}]`);
+    if (typeof row.progress === "number") bits.push(`${Math.round(row.progress * 100)}%`);
+    const teams = Array.isArray(row.teams) ? row.teams.map(str).filter(Boolean) : [];
+    if (teams.length) bits.push(teams.join(","));
+    const meta = bits.filter(Boolean).join(" ");
+    return `${str(row.name)}${meta ? ` ${meta}` : ""}\nid: ${str(row.id)}\n${str(row.url)}`;
+  };
+
+  const renderProjectMutation = (r: ProjectMutationResult): string =>
+    `${r.name}${r.state ? ` [${r.state}]` : ""}\nid: ${r.project_id}\n${r.url}`;
+
+  const renderTeam = (row: DataboxRow): string =>
+    `${str(row.key)} — ${str(row.name)}${str(row.description) ? `\n${str(row.description)}` : ""}\nid: ${str(row.id)}`;
 
   // ── Tasks (issues) ──
 
   const createTask = defineTool({
     name: "tracker_create_task",
     description:
-      "Create a task in the tracker. Returns the human reference (e.g. ENG-123) and URL. AFTER this, record the rationale in memory with memory_write type=task.",
+      "Create a task in the tracker. Returns the human reference (e.g. ENG-123) and URL. Optionally file it under a project (project_id), assign it (assignee_id), label it (label_ids), or set priority (0 none, 1 urgent, 2 high, 3 medium, 4 low). AFTER this, record the rationale in memory with memory_write type=task.",
     label: "Create task",
     parameters: Type.Object({
       title: Type.String(),
       description: Type.String(),
       project_id: Type.Optional(Type.String()),
+      assignee_id: Type.Optional(Type.String()),
+      label_ids: Type.Optional(Type.Array(Type.String())),
+      priority: Type.Optional(Type.Integer({ minimum: 0, maximum: 4 })),
     }),
     execute: async (_id, params, signal) => {
-      const task = await databox.createTask(params, { signal });
-      return toolResult(renderTask(task), task);
+      const result = await databox.createTask(params, { signal });
+      return toolResult(renderIssueMutation(result), result);
+    },
+  });
+
+  const updateTask = defineTool({
+    name: "tracker_update_task",
+    description:
+      "Update a task by its reference (e.g. ENG-123). Only the fields you pass change. Move it under a project (project_id), reassign (assignee_id), replace labels (label_ids), or set priority (0 none, 1 urgent, 2 high, 3 medium, 4 low).",
+    label: "Update task",
+    parameters: Type.Object({
+      ref: Type.String(),
+      title: Type.Optional(Type.String()),
+      description: Type.Optional(Type.String()),
+      project_id: Type.Optional(Type.String()),
+      assignee_id: Type.Optional(Type.String()),
+      label_ids: Type.Optional(Type.Array(Type.String())),
+      priority: Type.Optional(Type.Integer({ minimum: 0, maximum: 4 })),
+    }),
+    execute: async (_id, params, signal) => {
+      const result = await databox.updateTask(params, { signal });
+      return toolResult(renderIssueMutation(result), result);
     },
   });
 
@@ -72,12 +133,13 @@ export function buildTrackerTools(databox: DataboxClient): AgentTool[] {
 
   const getTask = defineTool({
     name: "tracker_get_task",
-    description: "Get one task by its reference (e.g. ENG-123), including live status.",
+    description:
+      "Get one task by its reference (e.g. ENG-123), including any fields the tracker projects (team, project, assignee, description, and live status when available).",
     label: "Get task",
     parameters: Type.Object({ ref: Type.String() }),
     execute: async (_id, params, signal) => {
-      const task = await databox.getTask(params.ref, 1000, signal);
-      return toolResult(renderTask(task), task);
+      const task = await databox.getTask(params.ref, signal);
+      return toolResult(renderTaskDetail(task), task);
     },
   });
 
@@ -119,8 +181,8 @@ export function buildTrackerTools(databox: DataboxClient): AgentTool[] {
       state: Type.Optional(Type.String()),
     }),
     execute: async (_id, params, signal) => {
-      const project = await databox.createProject(params, { signal });
-      return toolResult(renderProject(project), project);
+      const result = await databox.createProject(params, { signal });
+      return toolResult(renderProjectMutation(result), result);
     },
   });
 
@@ -137,8 +199,8 @@ export function buildTrackerTools(databox: DataboxClient): AgentTool[] {
       state: Type.Optional(Type.String()),
     }),
     execute: async (_id, params, signal) => {
-      const project = await databox.updateProject(params, { signal });
-      return toolResult(renderProject(project), project);
+      const result = await databox.updateProject(params, { signal });
+      return toolResult(renderProjectMutation(result), result);
     },
   });
 
@@ -169,6 +231,7 @@ export function buildTrackerTools(databox: DataboxClient): AgentTool[] {
 
   return [
     createTask,
+    updateTask,
     searchTasks,
     listTasks,
     getTask,

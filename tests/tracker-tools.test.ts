@@ -20,6 +20,7 @@ describe("buildTrackerTools", () => {
       "tracker_list_teams",
       "tracker_search_tasks",
       "tracker_update_project",
+      "tracker_update_task",
     ]);
   });
 

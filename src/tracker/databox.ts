@@ -10,19 +10,14 @@ export interface DataboxClientOptions {
   logger?: Logger;
 }
 
-/** A tracker task in neutral vocabulary (no Linear/Jira-specific fields). */
-export interface TrackerTask {
-  /** Human identifier, e.g. ENG-123. */
-  ref: string;
-  url: string;
-  title: string;
-  /** Live status — read from the tracker, never mirrored into memory. */
-  status?: string;
-  /** Team the task belongs to (e.g. "TAV"). */
-  team?: string;
-  /** Opaque internal id (Linear UUID); kept for `get`-by-id, not shown to memory. */
-  id?: string;
-}
+/**
+ * One row of a Databox dataset, passed through verbatim. The datasource owns the
+ * field set (it has evolved over time and will again), so the client does NOT
+ * rename or restrict fields into a fixed neutral struct — it surfaces what the
+ * datasource projects and lets the tool layer render whatever is present. New
+ * fields (or a re-added `title`/`status`) therefore appear with no code change.
+ */
+export type DataboxRow = Record<string, unknown>;
 
 export interface CreateTaskInput {
   title: string;
@@ -35,33 +30,25 @@ export interface CreateTaskInput {
   team?: string;
   /** Optional project id. When provided the issue is created under that project. */
   project_id?: string;
+  /** Optional assignee user UUID. */
+  assignee_id?: string;
+  /** Optional label UUIDs to apply. */
+  label_ids?: string[];
+  /** Optional priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low. */
+  priority?: number;
 }
 
-/** A tracker project in neutral vocabulary. */
-export interface TrackerProject {
-  /** Opaque internal id (Linear UUID); needed to update the project. */
-  id: string;
-  name: string;
-  url: string;
+export interface UpdateTaskInput {
+  /** UUID or human identifier (e.g. ENG-123) of the issue to update. */
+  ref: string;
+  title?: string;
   description?: string;
-  /** Lifecycle state: backlog | planned | started | paused | completed | canceled. */
-  status?: string;
-  /** Lead (display name or id, as the datasource projects it). */
-  lead?: string;
-  /** Team keys the project belongs to (e.g. ["TAV"]). */
-  teams?: string[];
-  /** Completion ratio in [0, 1]. */
-  progress?: number;
-}
-
-/** A tracker team in neutral vocabulary. Read-only reference data. */
-export interface TrackerTeam {
-  /** Opaque internal id (Linear UUID); pass as the team for project/issue creation. */
-  id: string;
-  /** Team key, e.g. "TAV" or "ENG". */
-  key: string;
-  name: string;
-  description?: string;
+  assignee_id?: string;
+  /** Label UUIDs (replaces the existing set). */
+  label_ids?: string[];
+  priority?: number;
+  /** Move the issue under this project UUID. */
+  project_id?: string;
 }
 
 export interface CreateProjectInput {
@@ -79,7 +66,7 @@ export interface CreateProjectInput {
 }
 
 export interface UpdateProjectInput {
-  /** UUID of the project to update (from {@link TrackerProject.id}). */
+  /** UUID of the project to update. */
   id: string;
   name?: string;
   description?: string;
@@ -89,40 +76,7 @@ export interface UpdateProjectInput {
   state?: string;
 }
 
-// ── Raw DataboxPPM shapes (verified against dbxcli against the live datasource) ──
-
-/** One row of the `issues` dataset (a Linear issue projected by Databox). */
-interface DataboxIssue {
-  id: string;
-  identifier: string;
-  title: string;
-  status?: string;
-  team?: string;
-  url: string;
-  [key: string]: unknown;
-}
-
-/** One row of the `projects` dataset (a Linear project projected by Databox). */
-interface DataboxProject {
-  id: string;
-  name: string;
-  url: string;
-  description?: string;
-  status?: string;
-  lead?: string;
-  teams?: string[];
-  progress?: number;
-  [key: string]: unknown;
-}
-
-/** One row of the `teams` dataset (a Linear team projected by Databox). */
-interface DataboxTeam {
-  id: string;
-  key: string;
-  name: string;
-  description?: string;
-  [key: string]: unknown;
-}
+// ── Raw dbxcli envelope + action result shapes ──
 
 interface ListResponse<T> {
   items: T[];
@@ -135,15 +89,15 @@ interface InvokeResponse<T> {
   result: T;
 }
 
-/** Result of the `create_issue` action. */
-interface CreateIssueResult {
+/** Result of the `create_issue` / `update_issue` actions. */
+export interface IssueMutationResult {
   identifier: string;
   issue_id: string;
   url: string;
 }
 
 /** Result of the `create_project` / `update_project` actions. */
-interface ProjectMutationResult {
+export interface ProjectMutationResult {
   name: string;
   project_id: string;
   url: string;
@@ -161,7 +115,7 @@ interface DatasetMeta {
 /** One entry of `dbxcli action list` — the alias + its neutral `action_type`. */
 interface ActionMeta {
   alias: string;
-  /** Neutral type: "create_issue" | "create_project" | "update_project". */
+  /** Neutral type, e.g. "create_issue" | "update_issue" | "create_project". */
   action_type: string;
 }
 
@@ -178,16 +132,37 @@ export class DataboxError extends Error {
   }
 }
 
-/** Project a raw Databox issue into the neutral {@link TrackerTask}. Pure. */
-export function toTrackerTask(issue: DataboxIssue): TrackerTask {
-  return {
-    ref: issue.identifier,
-    url: issue.url,
-    title: issue.title,
-    status: issue.status,
-    team: issue.team,
-    id: issue.id,
-  };
+// ── Pure helpers ──
+
+/** RFC-4122 UUID matcher; lets a team/project reference accept a key/name or a raw UUID. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
+
+/**
+ * Extract the human identifier (e.g. TAV-9) from a Linear issue URL like
+ * `https://linear.app/tavon/issue/TAV-9/...`. The issues dataset no longer
+ * projects an `identifier` field, so the ref is recovered from the URL. Returns
+ * "" when no ref can be parsed.
+ */
+export function refFromUrl(url: unknown): string {
+  if (typeof url !== "string") return "";
+  const match = url.match(/\/issue\/([A-Za-z0-9]+-\d+)/);
+  return match?.[1] ?? "";
+}
+
+/**
+ * The human reference for an issue row: the projected `identifier` if the
+ * datasource still provides one, else parsed from the URL, else the raw id.
+ */
+export function taskRef(row: DataboxRow): string {
+  const identifier = typeof row.identifier === "string" ? row.identifier : "";
+  if (identifier) return identifier;
+  const fromUrl = refFromUrl(row.url);
+  if (fromUrl) return fromUrl;
+  return typeof row.id === "string" ? row.id : "";
 }
 
 /**
@@ -199,45 +174,54 @@ export function buildCreateParams(input: CreateTaskInput): {
   team_id?: string;
   description?: string;
   project_id?: string;
+  assignee_id?: string;
+  label_ids?: string[];
+  priority?: number;
 } {
-  const params: { title: string; team_id?: string; description?: string; project_id?: string } = {
-    title: input.title,
-  };
+  const params: {
+    title: string;
+    team_id?: string;
+    description?: string;
+    project_id?: string;
+    assignee_id?: string;
+    label_ids?: string[];
+    priority?: number;
+  } = { title: input.title };
   if (input.team) params.team_id = input.team;
   if (input.description) params.description = input.description;
   if (input.project_id) params.project_id = input.project_id;
+  if (input.assignee_id) params.assignee_id = input.assignee_id;
+  if (input.label_ids && input.label_ids.length > 0) params.label_ids = input.label_ids;
+  if (typeof input.priority === "number") params.priority = input.priority;
   return params;
 }
 
-/** Project a raw Databox project into the neutral {@link TrackerProject}. Pure. */
-export function toTrackerProject(project: DataboxProject): TrackerProject {
-  return {
-    id: project.id,
-    name: project.name,
-    url: project.url,
-    description: project.description || undefined,
-    status: project.status || undefined,
-    lead: project.lead || undefined,
-    teams: project.teams && project.teams.length > 0 ? project.teams : undefined,
-    progress: typeof project.progress === "number" ? project.progress : undefined,
-  };
-}
-
-/** Project a raw Databox team into the neutral {@link TrackerTeam}. Pure. */
-export function toTrackerTeam(team: DataboxTeam): TrackerTeam {
-  return {
-    id: team.id,
-    key: team.key,
-    name: team.name,
-    description: team.description || undefined,
-  };
-}
-
-/** RFC-4122 UUID matcher; lets {@link CreateProjectInput.team} accept a key or a raw UUID. */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export function isUuid(value: string): boolean {
-  return UUID_RE.test(value);
+/** Build the `update_issue` action params. Pure. Only provided fields are sent. */
+export function buildUpdateTaskParams(input: UpdateTaskInput): {
+  issue_id: string;
+  title?: string;
+  description?: string;
+  assignee_id?: string;
+  label_ids?: string[];
+  priority?: number;
+  project_id?: string;
+} {
+  const params: {
+    issue_id: string;
+    title?: string;
+    description?: string;
+    assignee_id?: string;
+    label_ids?: string[];
+    priority?: number;
+    project_id?: string;
+  } = { issue_id: input.ref };
+  if (input.title) params.title = input.title;
+  if (input.description) params.description = input.description;
+  if (input.assignee_id) params.assignee_id = input.assignee_id;
+  if (input.label_ids && input.label_ids.length > 0) params.label_ids = input.label_ids;
+  if (typeof input.priority === "number") params.priority = input.priority;
+  if (input.project_id) params.project_id = input.project_id;
+  return params;
 }
 
 /**
@@ -285,9 +269,15 @@ export function buildUpdateProjectParams(input: UpdateProjectInput): {
 
 /**
  * Thin wrapper over the `dbxcli` CLI, which fronts the DataboxPPM datasource.
- * pi has no MCP client, so this is how the agent reaches the tracker. Linear /
- * Jira vocabulary stays inside this file; the rest of the agent sees only the
- * neutral {@link TrackerTask}, {@link TrackerProject}, and {@link TrackerTeam}.
+ * pi has no MCP client, so this is how the agent reaches the tracker.
+ *
+ * Following the {@link import("../proteos/proteos.ts").ProteosClient} pattern,
+ * this surfaces the datasource's own rows rather than projecting them into a
+ * renamed neutral struct: the datasource owns the field set and it evolves, so a
+ * fixed mapping silently goes stale (it once assumed `identifier`/`title`/`status`
+ * fields the issues dataset no longer projects). The tool layer renders whatever
+ * fields are present. Reads never mirror status into memory — the tracker is the
+ * source of truth.
  *
  * Entities: tasks (issues) and projects are read+write; teams are read-only.
  *
@@ -295,9 +285,9 @@ export function buildUpdateProjectParams(input: UpdateProjectInput): {
  * dbxcli config (via `dbxcli datasets` / `dbxcli action list`) and resolved by
  * their neutral `data_kind` / `action_type`, then cached for the client's life.
  *
- * Verified surface (see plans/implementation-plan.md §5):
+ * Verified surface (against the live datasource):
  *   list/search   → `{ items: T[], meta }`
- *   get           → resolved client-side from a list (no UUID known up front)
+ *   get           → a single row object, keyed by id OR human identifier
  *   action invoke → `{ metadata, result }` — result shape varies per action
  */
 export class DataboxClient {
@@ -355,7 +345,7 @@ export class DataboxClient {
 
   /** Resolve an action alias by its neutral `action_type`. */
   private async actionAlias(
-    type: "create_issue" | "create_project" | "update_project",
+    type: "create_issue" | "update_issue" | "create_project" | "update_project",
     signal?: AbortSignal,
   ) {
     const { actions } = await this.catalog(signal);
@@ -387,43 +377,38 @@ export class DataboxClient {
     }
   }
 
+  // ── Tasks (issues) ──
+
   /**
    * List tasks. `filters` are passed through verbatim as repeated `--filter`
    * clauses (e.g. `status=Done`, `status!=Canceled`, `labels in bug,urgent`,
    * `project_id=<uuid>`); they are AND-combined by the datasource.
    */
-  async listTasks(
-    limit = 50,
-    filters: string[] = [],
-    signal?: AbortSignal,
-  ): Promise<TrackerTask[]> {
+  async listTasks(limit = 50, filters: string[] = [], signal?: AbortSignal): Promise<DataboxRow[]> {
     const dataset = await this.datasetAlias("issues", signal);
     const args = ["list", dataset, "--limit", String(limit)];
     for (const filter of filters) args.push("--filter", filter);
-    const res = await this.run<ListResponse<DataboxIssue>>(args, signal);
-    return (res.items ?? []).map(toTrackerTask);
+    const res = await this.run<ListResponse<DataboxRow>>(args, signal);
+    return res.items ?? [];
   }
 
-  async searchTasks(query: string, limit = 50, signal?: AbortSignal): Promise<TrackerTask[]> {
+  async searchTasks(query: string, limit = 50, signal?: AbortSignal): Promise<DataboxRow[]> {
     const dataset = await this.datasetAlias("issues", signal);
-    const res = await this.run<ListResponse<DataboxIssue>>(
+    const res = await this.run<ListResponse<DataboxRow>>(
       ["search", dataset, query, "--limit", String(limit)],
       signal,
     );
-    return (res.items ?? []).map(toTrackerTask);
+    return res.items ?? [];
   }
 
   /**
-   * Get a task by its human identifier (e.g. ENG-123). `dbxcli get` keys on the
-   * internal UUID and Databox `search` only matches title/description content
-   * (not the identifier), so we list and filter by `identifier` client-side.
-   * `limit` bounds the scan (dataset cap is 1000); raise it for large workspaces.
+   * Get one task by its human identifier (e.g. ENG-123) via `dbxcli get`, which
+   * resolves the ref server-side — no client-side list scan. `dbxcli get` errors
+   * for an unknown ref, which surfaces as a {@link DataboxError}.
    */
-  async getTask(ref: string, limit = 1000, signal?: AbortSignal): Promise<TrackerTask> {
-    const tasks = await this.listTasks(limit, [], signal);
-    const match = tasks.find((t) => t.ref === ref);
-    if (!match) throw new DataboxError(`no task found with reference ${ref}`);
-    return match;
+  async getTask(ref: string, signal?: AbortSignal): Promise<DataboxRow> {
+    const dataset = await this.datasetAlias("issues", signal);
+    return this.run<DataboxRow>(["get", dataset, ref], signal);
   }
 
   /**
@@ -435,43 +420,62 @@ export class DataboxClient {
   async createTask(
     input: CreateTaskInput,
     opts: { simulated?: boolean; signal?: AbortSignal } = {},
-  ): Promise<TrackerTask> {
+  ): Promise<IssueMutationResult> {
     const action = await this.actionAlias("create_issue", opts.signal);
     const params = buildCreateParams(input);
     const args = ["action", "invoke", action, "--params", JSON.stringify(params)];
     if (opts.simulated) args.push("--simulated");
-    const res = await this.run<InvokeResponse<CreateIssueResult>>(args, opts.signal);
+    const res = await this.run<InvokeResponse<IssueMutationResult>>(args, opts.signal);
     if (!res.result?.identifier) {
       throw new DataboxError("create action returned no identifier");
     }
-    return {
-      ref: res.result.identifier,
-      url: res.result.url,
-      title: input.title,
-      id: res.result.issue_id,
-    };
+    return res.result;
+  }
+
+  /**
+   * Update a task via the `update_issue` action. `ref` accepts a UUID or a human
+   * identifier (e.g. ENG-123). Only provided fields are sent. Pass
+   * `simulated: true` to dry-run.
+   */
+  async updateTask(
+    input: UpdateTaskInput,
+    opts: { simulated?: boolean; signal?: AbortSignal } = {},
+  ): Promise<IssueMutationResult> {
+    const action = await this.actionAlias("update_issue", opts.signal);
+    const params = buildUpdateTaskParams(input);
+    const args = ["action", "invoke", action, "--params", JSON.stringify(params)];
+    if (opts.simulated) args.push("--simulated");
+    const res = await this.run<InvokeResponse<IssueMutationResult>>(args, opts.signal);
+    if (!res.result?.identifier) {
+      throw new DataboxError("update action returned no identifier");
+    }
+    return res.result;
   }
 
   // ── Projects (read + write) ──
 
-  async listProjects(limit = 50, signal?: AbortSignal): Promise<TrackerProject[]> {
+  async listProjects(limit = 50, signal?: AbortSignal): Promise<DataboxRow[]> {
     const dataset = await this.datasetAlias("projects", signal);
-    const res = await this.run<ListResponse<DataboxProject>>(
+    const res = await this.run<ListResponse<DataboxRow>>(
       ["list", dataset, "--limit", String(limit)],
       signal,
     );
-    return (res.items ?? []).map(toTrackerProject);
+    return res.items ?? [];
   }
 
   /**
-   * Get one project by UUID or (case-insensitive) name. Projects have no human
-   * identifier like ENG-123, so we list and match client-side. `limit` bounds the
-   * scan (dataset cap is 1000).
+   * Get one project by UUID (via `dbxcli get`) or by case-insensitive name (a
+   * client-side scan, since projects have no human identifier to `get` by).
+   * `limit` bounds the name scan (dataset cap is 1000).
    */
-  async getProject(idOrName: string, limit = 1000, signal?: AbortSignal): Promise<TrackerProject> {
+  async getProject(idOrName: string, limit = 1000, signal?: AbortSignal): Promise<DataboxRow> {
+    if (isUuid(idOrName)) {
+      const dataset = await this.datasetAlias("projects", signal);
+      return this.run<DataboxRow>(["get", dataset, idOrName], signal);
+    }
     const projects = await this.listProjects(limit, signal);
     const match = projects.find(
-      (p) => p.id === idOrName || p.name.toLowerCase() === idOrName.toLowerCase(),
+      (p) => typeof p.name === "string" && p.name.toLowerCase() === idOrName.toLowerCase(),
     );
     if (!match) throw new DataboxError(`no project found matching ${idOrName}`);
     return match;
@@ -485,12 +489,14 @@ export class DataboxClient {
   async resolveTeamId(team: string, signal?: AbortSignal): Promise<string> {
     if (isUuid(team)) return team;
     const teams = await this.listTeams(1000, signal);
-    const match = teams.find(
-      (t) =>
-        t.key.toLowerCase() === team.toLowerCase() || t.name.toLowerCase() === team.toLowerCase(),
-    );
-    if (!match) throw new DataboxError(`no team found matching ${team}`);
-    return match.id;
+    const match = teams.find((t) => {
+      const key = typeof t.key === "string" ? t.key : "";
+      const name = typeof t.name === "string" ? t.name : "";
+      return key.toLowerCase() === team.toLowerCase() || name.toLowerCase() === team.toLowerCase();
+    });
+    const id = match && typeof match.id === "string" ? match.id : "";
+    if (!id) throw new DataboxError(`no team found matching ${team}`);
+    return id;
   }
 
   /**
@@ -501,7 +507,7 @@ export class DataboxClient {
   async createProject(
     input: CreateProjectInput,
     opts: { simulated?: boolean; signal?: AbortSignal } = {},
-  ): Promise<TrackerProject> {
+  ): Promise<ProjectMutationResult> {
     const [teamId, action] = await Promise.all([
       this.resolveTeamId(input.team, opts.signal),
       this.actionAlias("create_project", opts.signal),
@@ -513,13 +519,7 @@ export class DataboxClient {
     if (!res.result?.project_id) {
       throw new DataboxError("create project action returned no project id");
     }
-    return {
-      id: res.result.project_id,
-      name: res.result.name || input.name,
-      url: res.result.url,
-      status: res.result.state || input.state,
-      teams: [input.team],
-    };
+    return res.result;
   }
 
   /**
@@ -529,7 +529,7 @@ export class DataboxClient {
   async updateProject(
     input: UpdateProjectInput,
     opts: { simulated?: boolean; signal?: AbortSignal } = {},
-  ): Promise<TrackerProject> {
+  ): Promise<ProjectMutationResult> {
     const action = await this.actionAlias("update_project", opts.signal);
     const params = buildUpdateProjectParams(input);
     const args = ["action", "invoke", action, "--params", JSON.stringify(params)];
@@ -538,34 +538,38 @@ export class DataboxClient {
     if (!res.result?.project_id) {
       throw new DataboxError("update project action returned no project id");
     }
-    return {
-      id: res.result.project_id,
-      name: res.result.name || input.name || "",
-      url: res.result.url,
-      status: res.result.state || input.state,
-    };
+    return res.result;
   }
 
   // ── Teams (read-only reference) ──
 
-  async listTeams(limit = 50, signal?: AbortSignal): Promise<TrackerTeam[]> {
+  async listTeams(limit = 50, signal?: AbortSignal): Promise<DataboxRow[]> {
     const dataset = await this.datasetAlias("teams", signal);
-    const res = await this.run<ListResponse<DataboxTeam>>(
+    const res = await this.run<ListResponse<DataboxRow>>(
       ["list", dataset, "--limit", String(limit)],
       signal,
     );
-    return (res.items ?? []).map(toTrackerTeam);
+    return res.items ?? [];
   }
 
-  /** Get one team by key (e.g. "TAV"), name, or UUID. Matches client-side. */
-  async getTeam(keyOrName: string, limit = 1000, signal?: AbortSignal): Promise<TrackerTeam> {
+  /**
+   * Get one team by UUID (via `dbxcli get`) or by key/name (a client-side scan).
+   * `limit` bounds the scan (dataset cap is 1000).
+   */
+  async getTeam(keyOrName: string, limit = 1000, signal?: AbortSignal): Promise<DataboxRow> {
+    if (isUuid(keyOrName)) {
+      const dataset = await this.datasetAlias("teams", signal);
+      return this.run<DataboxRow>(["get", dataset, keyOrName], signal);
+    }
     const teams = await this.listTeams(limit, signal);
-    const match = teams.find(
-      (t) =>
-        t.id === keyOrName ||
-        t.key.toLowerCase() === keyOrName.toLowerCase() ||
-        t.name.toLowerCase() === keyOrName.toLowerCase(),
-    );
+    const match = teams.find((t) => {
+      const key = typeof t.key === "string" ? t.key : "";
+      const name = typeof t.name === "string" ? t.name : "";
+      return (
+        key.toLowerCase() === keyOrName.toLowerCase() ||
+        name.toLowerCase() === keyOrName.toLowerCase()
+      );
+    });
     if (!match) throw new DataboxError(`no team found matching ${keyOrName}`);
     return match;
   }

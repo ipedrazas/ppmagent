@@ -3,31 +3,30 @@ import {
   buildCreateParams,
   buildCreateProjectParams,
   buildUpdateProjectParams,
+  buildUpdateTaskParams,
   isUuid,
-  toTrackerProject,
-  toTrackerTask,
-  toTrackerTeam,
+  refFromUrl,
+  taskRef,
 } from "../src/tracker/databox.ts";
 
-describe("toTrackerTask", () => {
-  test("projects a raw Databox issue into neutral fields", () => {
-    const task = toTrackerTask({
-      id: "uuid-1",
-      identifier: "ENG-123",
-      title: "Email nudge",
-      status: "Todo",
-      team: "ENG",
-      url: "https://linear.app/acme/issue/ENG-123",
-      description: "ignored",
-    });
-    expect(task).toEqual({
-      ref: "ENG-123",
-      url: "https://linear.app/acme/issue/ENG-123",
-      title: "Email nudge",
-      status: "Todo",
-      team: "ENG",
-      id: "uuid-1",
-    });
+describe("refFromUrl", () => {
+  test("parses the human identifier out of a Linear issue URL", () => {
+    expect(refFromUrl("https://linear.app/tavon/issue/TAV-9/some-slug")).toBe("TAV-9");
+  });
+
+  test("returns empty for a non-issue or non-string url", () => {
+    expect(refFromUrl("https://linear.app/tavon/project/abc")).toBe("");
+    expect(refFromUrl(undefined)).toBe("");
+    expect(refFromUrl(42)).toBe("");
+  });
+});
+
+describe("taskRef", () => {
+  test("prefers a projected identifier, then the URL, then the raw id", () => {
+    expect(taskRef({ identifier: "ENG-1", url: "https://x/issue/ENG-2/s" })).toBe("ENG-1");
+    expect(taskRef({ url: "https://x/issue/ENG-2/s" })).toBe("ENG-2");
+    expect(taskRef({ id: "uuid-3" })).toBe("uuid-3");
+    expect(taskRef({})).toBe("");
   });
 });
 
@@ -50,50 +49,58 @@ describe("buildCreateParams", () => {
       team_id: "TAV",
     });
   });
-});
 
-describe("toTrackerProject", () => {
-  test("projects a raw Databox project into neutral fields", () => {
-    const project = toTrackerProject({
-      id: "uuid-1",
-      name: "a2",
-      url: "https://linear.app/acme/project/a2",
-      description: "",
-      status: "backlog",
-      lead: "",
-      teams: ["TAV"],
-      progress: 0.25,
-    });
-    expect(project).toEqual({
-      id: "uuid-1",
-      name: "a2",
-      url: "https://linear.app/acme/project/a2",
-      status: "backlog",
-      teams: ["TAV"],
-      progress: 0.25,
+  test("includes project_id, assignee_id, labels, and priority when given", () => {
+    expect(
+      buildCreateParams({
+        title: "T",
+        description: "D",
+        project_id: "proj-uuid",
+        assignee_id: "user-uuid",
+        label_ids: ["bug-uuid"],
+        priority: 2,
+      }),
+    ).toEqual({
+      title: "T",
+      description: "D",
+      project_id: "proj-uuid",
+      assignee_id: "user-uuid",
+      label_ids: ["bug-uuid"],
+      priority: 2,
     });
   });
 
-  test("drops empty teams and keeps a zero progress", () => {
-    const project = toTrackerProject({
-      id: "uuid-2",
-      name: "b",
-      url: "u",
-      teams: [],
-      progress: 0,
+  test("drops an empty label set and keeps priority 0", () => {
+    expect(buildCreateParams({ title: "T", description: "", label_ids: [], priority: 0 })).toEqual({
+      title: "T",
+      priority: 0,
     });
-    expect(project.teams).toBeUndefined();
-    expect(project.progress).toBe(0);
   });
 });
 
-describe("toTrackerTeam", () => {
-  test("projects a raw Databox team into neutral fields", () => {
-    expect(toTrackerTeam({ id: "uuid-1", key: "TAV", name: "Tavon", description: "" })).toEqual({
-      id: "uuid-1",
-      key: "TAV",
-      name: "Tavon",
-      description: undefined,
+describe("buildUpdateTaskParams", () => {
+  test("always sends issue_id and only the provided fields", () => {
+    expect(buildUpdateTaskParams({ ref: "TAV-9", title: "New" })).toEqual({
+      issue_id: "TAV-9",
+      title: "New",
+    });
+  });
+
+  test("maps ref to issue_id and includes project_id, labels, priority", () => {
+    expect(
+      buildUpdateTaskParams({
+        ref: "TAV-9",
+        description: "D",
+        project_id: "proj-uuid",
+        label_ids: ["bug-uuid"],
+        priority: 1,
+      }),
+    ).toEqual({
+      issue_id: "TAV-9",
+      description: "D",
+      project_id: "proj-uuid",
+      label_ids: ["bug-uuid"],
+      priority: 1,
     });
   });
 });
