@@ -159,3 +159,5 @@ tests/**/.compactroot-*
 /.session/
 tests/**/.sessroot-*
 tests/**/.tgroot-*
+
+data/
