@@ -55,6 +55,16 @@ export interface Config {
    */
   dbxcliConfig: string;
 
+  /** `proteos` binary (path or name on PATH) for the ProteOS task lane. */
+  proteosBin: string;
+  /**
+   * ProteOS control-plane base URL, passed to proteos as --url. Empty = let
+   * proteos resolve it from PROTEOS_URL or the stored login. The auth token is
+   * not configured here: proteos reads PROTEOS_TOKEN (or its stored login) from
+   * the inherited environment, keeping the secret off the command line.
+   */
+  proteosUrl: string;
+
   /** Telegram bot token. */
   telegramBotToken: string;
   /** Optional single allowed chat id (single-tenant PoC). */
@@ -137,6 +147,9 @@ export function loadConfig(env: Env = process.env): Config {
 
     dbxcliBin: optional(env, "PPMA_DBXCLI_BIN", "dbxcli"),
     dbxcliConfig: optional(env, "PPMA_DBXCLI_CONFIG", ""),
+
+    proteosBin: optional(env, "PPMA_PROTEOS_BIN", "proteos"),
+    proteosUrl: optional(env, "PROTEOS_URL", ""),
 
     telegramBotToken: required(env, "PPMA_TELEGRAM_BOT_TOKEN"),
     telegramAllowedChatId: env.PPMA_TELEGRAM_ALLOWED_CHAT_ID || undefined,

@@ -17,6 +17,8 @@ describe("loadConfig", () => {
     expect(config.contextRecent).toBe(3);
     expect(config.dbxcliBin).toBe("dbxcli");
     expect(config.dbxcliConfig).toBe("");
+    expect(config.proteosBin).toBe("proteos");
+    expect(config.proteosUrl).toBe("");
     expect(config.compactionTokenThreshold).toBe(0);
     expect(config.telegramAllowedChatId).toBeUndefined();
     expect(config.logLevel).toBe("info");

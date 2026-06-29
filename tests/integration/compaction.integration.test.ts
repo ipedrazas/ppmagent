@@ -32,6 +32,8 @@ function testConfig(root: string): Config {
     contextRecent: 5,
     dbxcliBin: "dbxcli",
     dbxcliConfig: "",
+    proteosBin: "proteos",
+    proteosUrl: "",
     telegramBotToken: "test",
     telegramAllowedChatId: undefined,
     sessionFile: join(root, "session.json"),

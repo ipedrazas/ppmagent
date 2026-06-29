@@ -6,6 +6,8 @@ import { type Logger, nullLogger } from "./logger.ts";
 import { makeTransformContext } from "./memory/context.ts";
 import { PpmClient } from "./memory/ppm.ts";
 import { buildMemoryTools } from "./memory/tools.ts";
+import { ProteosClient } from "./proteos/proteos.ts";
+import { buildProteosTools } from "./proteos/tools.ts";
 import { buildAskUserTool } from "./tools/ask-user.ts";
 import { DataboxClient } from "./tracker/databox.ts";
 import { buildTrackerTools } from "./tracker/tools.ts";
@@ -22,7 +24,13 @@ Operating rules:
 - CLARIFY before creating: if a request is under-specified (missing acceptance criteria, target metric, or owner), call ask_user with ONE question and stop. Never batch ask_user with other tools. Never guess a task into the backlog.
 - Memory holds WHY; the tracker holds WHAT + STATUS. After tracker_create_task or tracker_create_project, record the rationale with memory_write type=task (ref/id + url), never the status.
 - Resolve open questions with memory_write type=question resolve:true once answered.
-- Keep entries atomic and typed. Prefer specific types over note.`;
+- Keep entries atomic and typed. Prefer specific types over note.
+
+Delegating execution to ProteOS (proteos_* tools):
+- ProteOS runs a headless coding agent against a repo cloned in a microVM. Use it to DO the work behind a task (write code, fix a bug), not to track it — the tracker still holds STATUS.
+- Flow: proteos_machines_list to get a machine id → proteos_project_ensure the repo onto it → proteos_task_run with a clear prompt. task_run returns a task id immediately and does NOT wait; report the id and poll with proteos_task_get rather than blocking. Every proteos call takes the machine id explicitly; task/git/project calls also take the project (the repo's workspace directory name).
+- To land the work: review with proteos_git_status/proteos_git_diff, then proteos_git_branch, proteos_git_commit, proteos_git_push (setUpstream on a new branch), and proteos_git_pr. The task agent never commits on its own — that is the explicit gate.
+- After dispatching or landing work for a tracker task, record the link (task id / PR url) in memory with memory_write, never the live status.`;
 
 /**
  * Resolve a model from a provider id + model id. `getBuiltinModel` is strongly
@@ -37,6 +45,7 @@ export interface BuiltAgent {
   agent: Agent;
   ppm: PpmClient;
   databox: DataboxClient;
+  proteos: ProteosClient;
 }
 
 export interface BuildAgentOverrides {
@@ -90,8 +99,18 @@ export function buildAgent(
     config: config.dbxcliConfig,
     logger,
   });
+  const proteos = new ProteosClient({
+    bin: config.proteosBin,
+    url: config.proteosUrl || undefined,
+    logger,
+  });
 
-  const tools = [...buildMemoryTools(ppm), ...buildTrackerTools(databox), buildAskUserTool(ppm)];
+  const tools = [
+    ...buildMemoryTools(ppm),
+    ...buildTrackerTools(databox),
+    ...buildProteosTools(proteos),
+    buildAskUserTool(ppm),
+  ];
 
   const agent = new Agent({
     initialState: {
@@ -110,5 +129,5 @@ export function buildAgent(
 
   traceTools(agent, logger);
 
-  return { agent, ppm, databox };
+  return { agent, ppm, databox, proteos };
 }
