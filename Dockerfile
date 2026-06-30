@@ -47,6 +47,15 @@ ENV NODE_ENV=production \
     PPMA_PROTEOS_BIN=proteos \
     PPM_MEMORY_ROOT=/app/memory
 
+# The bun:slim base omits ca-certificates. The Go-built `proteos` CLI (CGO off)
+# reads TLS roots from /etc/ssl/certs/ca-certificates.crt; without it every
+# HTTPS call fails with "x509: certificate signed by unknown authority", even
+# for ordinary public (Let's Encrypt) endpoints. dbxcli (rustls, roots compiled
+# in) is unaffected, which is why only proteos breaks.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 # The external CLIs the agent shells out to, on PATH. dbxcli still needs its
 # DataboxPPM config/token at runtime, and proteos its PROTEOS_URL/PROTEOS_TOKEN
 # (env or a mounted config file).
