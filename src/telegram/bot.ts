@@ -9,6 +9,7 @@ import {
 } from "../compaction.ts";
 import type { CompactionOutcome, Summarizer } from "../compaction.ts";
 import type { Config } from "../config.ts";
+import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import { type SessionState, type SessionStore, newSession, shortId } from "../session/store.ts";
 import type { TelegramClient } from "./client.ts";
@@ -163,6 +164,52 @@ export class TelegramBot {
   }
 
   /**
+   * The external CLIs ppmagent shells out to, paired with what each powers.
+   * `/tools` reports these so an operator can confirm from the chat which tool
+   * builds are deployed alongside the bot.
+   */
+  private toolSpecs(): Array<{ bin: string; role: string }> {
+    return [
+      { bin: this.config.ppmBin, role: "memory" },
+      { bin: this.config.dbxcliBin, role: "tracker" },
+      { bin: this.config.proteosBin, role: "ProteOS task lane" },
+    ];
+  }
+
+  /**
+   * Query each external CLI's `--version` and report it. A tool that fails to
+   * spawn (not on PATH) or exits non-zero is reported as unavailable rather than
+   * failing the whole command, so `/tools` always answers. Version formats differ
+   * per CLI, so the raw output is passed through (multi-line collapsed to one).
+   */
+  private async toolsReport(): Promise<string> {
+    const lines = await Promise.all(
+      this.toolSpecs().map(async ({ bin, role }) => {
+        try {
+          const result = await execCommand(bin, ["--version"], {
+            signal: this.abort.signal,
+            logger: this.log,
+          });
+          if (result.exitCode !== 0) {
+            return `• ${bin} (${role}) — unavailable (exit ${result.exitCode})`;
+          }
+          const version =
+            [result.stdout, result.stderr]
+              .join("\n")
+              .split("\n")
+              .map((l) => l.trim())
+              .filter(Boolean)
+              .join(" · ") || "(no version output)";
+          return `• ${version} — ${role}`;
+        } catch {
+          return `• ${bin} (${role}) — not installed`;
+        }
+      }),
+    );
+    return `ppmagent tools:\n${lines.join("\n")}`;
+  }
+
+  /**
    * `/resume` with no argument lists saved sessions; with an id/name it switches
    * to that session. Returns the reply text. Persists the outgoing session first
    * (if non-empty) so no in-progress transcript is lost on the swap.
@@ -268,6 +315,13 @@ export class TelegramBot {
 
     if (trimmed === "/session") {
       const reply = this.sessionReport();
+      await this.send(chatId, [reply]);
+      return [reply];
+    }
+
+    if (trimmed === "/tools") {
+      const reply = await this.toolsReport();
+      this.log.withMetadata({ chatId }).info("tools reported");
       await this.send(chatId, [reply]);
       return [reply];
     }

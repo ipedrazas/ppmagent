@@ -165,6 +165,18 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
     expect(store.find("metrics-review")?.name).toBe("metrics-review");
   });
 
+  test("/tools reports each CLI's version (or that it is unavailable)", async () => {
+    const store = new SessionStore(join(root, "session.json"));
+    const { bot, sent } = makeBot(store);
+    const replies = await bot.handleMessage(CHAT, "/tools");
+    expect(replies[0]).toContain("ppmagent tools:");
+    // ppm is required for this suite, so its real version line is present and
+    // not the "not installed" fallback.
+    expect(replies[0]).toMatch(/ppm.*memory/);
+    expect(replies[0]).not.toContain("ppm (memory) — not installed");
+    expect(sent.at(-1)?.text).toContain("ppmagent tools:");
+  });
+
   test("/resume lists sessions and switches back to a named one", async () => {
     faux.setResponses([fauxAssistantMessage("Noted.")]);
     const store = new SessionStore(join(root, "session.json"));

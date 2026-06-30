@@ -44,6 +44,7 @@ handled locally (no model call, no token cost):
 | `/new [name]` | Start a fresh session: clears the transcript (optionally naming it) while keeping the active project. Memory in `ppm` is untouched — the clean slate is how you check what the agent recalls from memory alone. |
 | `/name <name>` | Give the current session a human-readable label. |
 | `/session` | Show the current session: short id, name, active project, and message count. |
+| `/tools` | List the external CLIs the agent shells out to (`ppm`, `dbxcli`, `proteos`) with the version of each installed build. |
 | `/resume [id\|name]` | With no argument, list saved sessions. With a short id or name, switch back to that session (the current transcript is saved first). |
 
 Sessions are stored one JSON file each under the session directory (derived from
