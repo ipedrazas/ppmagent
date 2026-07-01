@@ -85,9 +85,9 @@ export class TelegramBot {
   ) {
     this.summarize = deps.summarize ?? placeholderSummarizer;
     this.log = (deps.logger ?? nullLogger).child().withContext({ component: "telegram-bot" });
-    this.allowedChatId = config.telegramAllowedChatId
-      ? Number(config.telegramAllowedChatId)
-      : undefined;
+    // Validated at config load; `undefined` only via the explicit
+    // PPMA_ALLOW_ANY_CHAT opt-out (warned about loudly in start()).
+    this.allowedChatId = config.telegramAllowedChatId;
     // Restore the durable session into the live agent.
     this.state = deps.store.load() ?? newSession();
     this.built.agent.state.messages = this.state.messages;
@@ -377,6 +377,11 @@ export class TelegramBot {
   /** Long-poll Telegram and dispatch messages until {@link stop} is called. */
   async start(): Promise<void> {
     this.running = true;
+    if (this.allowedChatId === undefined) {
+      this.log.warn(
+        "bot is OPEN TO ALL CHATS (PPMA_ALLOW_ANY_CHAT) — anyone who finds the handle can drive it",
+      );
+    }
     this.log
       .withMetadata({ allowedChatId: this.allowedChatId, activeProject: this.state.activeProject })
       .info("bot started; long-polling for updates");

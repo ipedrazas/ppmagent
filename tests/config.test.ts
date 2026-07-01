@@ -4,6 +4,7 @@ import { type Env, loadConfig } from "../src/config.ts";
 const base: Env = {
   ANTHROPIC_API_KEY: "sk-test",
   PPMA_TELEGRAM_BOT_TOKEN: "tg-test",
+  PPMA_TELEGRAM_ALLOWED_CHAT_ID: "12345",
 };
 
 describe("loadConfig", () => {
@@ -20,7 +21,7 @@ describe("loadConfig", () => {
     expect(config.proteosBin).toBe("proteos");
     expect(config.proteosUrl).toBe("");
     expect(config.compactionTokenThreshold).toBe(0);
-    expect(config.telegramAllowedChatId).toBeUndefined();
+    expect(config.telegramAllowedChatId).toBe(12345);
     expect(config.logLevel).toBe("info");
     expect(config.logFormat).toBe("json");
   });
@@ -47,11 +48,39 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ANTHROPIC_API_KEY: "x" })).toThrow(/PPMA_TELEGRAM_BOT_TOKEN/);
   });
 
+  test("fails closed when the allowed chat id is missing", () => {
+    const { PPMA_TELEGRAM_ALLOWED_CHAT_ID: _omitted, ...noChatId } = base;
+    expect(() => loadConfig(noChatId)).toThrow(/PPMA_TELEGRAM_ALLOWED_CHAT_ID/);
+  });
+
+  test("rejects a malformed allowed chat id instead of silently ignoring all chats", () => {
+    expect(() => loadConfig({ ...base, PPMA_TELEGRAM_ALLOWED_CHAT_ID: "not-a-number" })).toThrow(
+      /must be an integer chat id/,
+    );
+  });
+
+  test("parses a negative (group) chat id", () => {
+    const config = loadConfig({ ...base, PPMA_TELEGRAM_ALLOWED_CHAT_ID: "-1001234567890" });
+    expect(config.telegramAllowedChatId).toBe(-1001234567890);
+  });
+
+  test("PPMA_ALLOW_ANY_CHAT=true explicitly opts into an open bot", () => {
+    const { PPMA_TELEGRAM_ALLOWED_CHAT_ID: _omitted, ...noChatId } = base;
+    const config = loadConfig({ ...noChatId, PPMA_ALLOW_ANY_CHAT: "true" });
+    expect(config.telegramAllowedChatId).toBeUndefined();
+  });
+
+  test("an explicit allowed chat id wins over PPMA_ALLOW_ANY_CHAT", () => {
+    const config = loadConfig({ ...base, PPMA_ALLOW_ANY_CHAT: "true" });
+    expect(config.telegramAllowedChatId).toBe(12345);
+  });
+
   test("selects an alternate provider with its own key and default model", () => {
     const config = loadConfig({
       PPMA_PROVIDER: "deepseek",
       DEEPSEEK_API_KEY: "ds-test",
       PPMA_TELEGRAM_BOT_TOKEN: "tg-test",
+      PPMA_TELEGRAM_ALLOWED_CHAT_ID: "12345",
     });
     expect(config.provider).toBe("deepseek");
     expect(config.apiKey).toBe("ds-test");
@@ -63,6 +92,7 @@ describe("loadConfig", () => {
       PPMA_PROVIDER: "glm",
       ZAI_API_KEY: "zai-test",
       PPMA_TELEGRAM_BOT_TOKEN: "tg-test",
+      PPMA_TELEGRAM_ALLOWED_CHAT_ID: "12345",
     });
     expect(config.provider).toBe("zai");
     expect(config.apiKey).toBe("zai-test");
@@ -87,6 +117,7 @@ describe("loadConfig", () => {
       OPENROUTER_API_KEY: "or-test",
       PPMA_MODEL: "anthropic/claude-opus-4.5",
       PPMA_TELEGRAM_BOT_TOKEN: "tg-test",
+      PPMA_TELEGRAM_ALLOWED_CHAT_ID: "12345",
     });
     expect(config.model).toBe("anthropic/claude-opus-4.5");
   });

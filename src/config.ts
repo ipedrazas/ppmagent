@@ -67,8 +67,13 @@ export interface Config {
 
   /** Telegram bot token. */
   telegramBotToken: string;
-  /** Optional single allowed chat id (single-tenant PoC). */
-  telegramAllowedChatId: string | undefined;
+  /**
+   * The single allowed chat id (single-tenant PoC). Required — the bot can
+   * create tracker issues, dispatch coding agents, and push code, so it must
+   * not be open to whoever finds the handle. `undefined` only when the
+   * operator explicitly opted out via PPMA_ALLOW_ANY_CHAT=true.
+   */
+  telegramAllowedChatId: number | undefined;
   /** Path to the durable session file. */
   sessionFile: string;
 
@@ -131,6 +136,30 @@ function resolveProvider(env: Env): Provider {
 }
 
 /**
+ * Resolve the allowed chat id, failing closed: it must be set (and parse as an
+ * integer — Telegram chat ids are integers, negative for groups) unless the
+ * operator explicitly opts into an open bot with PPMA_ALLOW_ANY_CHAT=true.
+ * A silently unset or malformed value must never yield an open bot.
+ */
+function resolveAllowedChatId(env: Env): number | undefined {
+  const raw = env.PPMA_TELEGRAM_ALLOWED_CHAT_ID;
+  if (!raw) {
+    if (env.PPMA_ALLOW_ANY_CHAT === "true") return undefined;
+    throw new ConfigError(
+      "Missing required environment variable: PPMA_TELEGRAM_ALLOWED_CHAT_ID " +
+        "(or set PPMA_ALLOW_ANY_CHAT=true to explicitly run the bot open to all chats)",
+    );
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed)) {
+    throw new ConfigError(
+      `Environment variable PPMA_TELEGRAM_ALLOWED_CHAT_ID must be an integer chat id, got: ${raw}`,
+    );
+  }
+  return parsed;
+}
+
+/**
  * Build a {@link Config} from a process environment. Throws {@link ConfigError}
  * if a required variable is missing or malformed.
  */
@@ -152,7 +181,7 @@ export function loadConfig(env: Env = process.env): Config {
     proteosUrl: optional(env, "PROTEOS_URL", ""),
 
     telegramBotToken: required(env, "PPMA_TELEGRAM_BOT_TOKEN"),
-    telegramAllowedChatId: env.PPMA_TELEGRAM_ALLOWED_CHAT_ID || undefined,
+    telegramAllowedChatId: resolveAllowedChatId(env),
     sessionFile: optional(env, "PPMA_SESSION_FILE", "./.session/session.json"),
 
     compactionTokenThreshold: int(env, "PPMA_COMPACTION_TOKEN_THRESHOLD", 0),
