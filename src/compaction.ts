@@ -4,14 +4,16 @@ import {
   estimateContextTokens,
   generateSummary,
 } from "@earendil-works/pi-agent-core";
-import { type Model, type UserMessage, createModels } from "@earendil-works/pi-ai";
+import type { Model, UserMessage } from "@earendil-works/pi-ai";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
 /**
  * Compaction policy + mechanism. The handover names `shouldCompactBeforeNextTurn`,
  * which pi does NOT export — we own the decision. After each turn the run loop
  * calls {@link maybeCompact}; when the transcript crosses the token threshold it
- * (1) flushes durable facts to memory, then (2) replaces the older transcript
- * with a summary, keeping a recent tail.
+ * (1) summarizes the older transcript, (2) flushes that summary to memory as a
+ * durable checkpoint, then (3) replaces the older messages with the summary,
+ * keeping a recent tail.
  *
  * The point (spike claim 4): durable facts already live in `ppm` and are
  * re-injected by `transformContext`, so a pre-compaction fact is still recalled
@@ -58,10 +60,14 @@ export const placeholderSummarizer: Summarizer = async (messages) =>
   `${messages.length} earlier messages were compacted away. Durable facts (decisions, open questions, tasks) are preserved in project memory and re-injected each turn.`;
 
 /**
- * A summarizer backed by pi's `generateSummary` using the given model. Used in
- * production (the run loop); not exercised by tests since it needs a live model.
+ * A summarizer backed by pi's `generateSummary` using the given model. The
+ * default `Models` collection is {@link builtinModels} (NOT the empty
+ * `createModels()` — that has no providers registered and every call would
+ * fail with "Unknown provider"); its providers resolve auth ambiently from the
+ * provider's env var (e.g. ANTHROPIC_API_KEY), which config already requires
+ * for the selected provider. Not exercised by tests: it needs a live model.
  */
-export function makeModelSummarizer(model: Model<any>, models = createModels()): Summarizer {
+export function makeModelSummarizer(model: Model<any>, models = builtinModels()): Summarizer {
   return async (messages, signal) => {
     const result = await generateSummary(
       messages,
@@ -83,30 +89,16 @@ function summaryMessage(summary: string): UserMessage {
   };
 }
 
-/**
- * Replace all but the last `keepRecent` messages with a single summary message.
- * Returns the original array unchanged when there is nothing to compact.
- */
-export async function compactTranscript(
-  messages: AgentMessage[],
-  summarize: Summarizer,
-  keepRecent: number,
-  signal?: AbortSignal,
-): Promise<AgentMessage[]> {
-  if (messages.length <= keepRecent) return messages;
-  const cut = messages.length - keepRecent;
-  const older = messages.slice(0, cut);
-  const tail = messages.slice(cut);
-  const summary = await summarize(older, signal);
-  return [summaryMessage(summary), ...tail];
-}
-
 export interface MaybeCompactArgs {
   messages: AgentMessage[];
   policy: CompactionPolicy;
   summarize: Summarizer;
-  /** Persist durable facts to memory before the transcript is summarized. */
-  flush?: (signal?: AbortSignal) => Promise<void>;
+  /**
+   * Persist the generated summary to memory as a durable checkpoint before the
+   * older transcript is dropped. Receives the same summary text that replaces
+   * the dropped messages, so what memory keeps is what the transcript keeps.
+   */
+  flush?: (summary: string, signal?: AbortSignal) => Promise<void>;
   signal?: AbortSignal;
 }
 
@@ -118,8 +110,11 @@ export interface CompactionOutcome {
 }
 
 /**
- * Compact when over threshold: flush durable facts first, then summarize the
- * older transcript. The caller assigns `outcome.messages` back to the agent.
+ * Compact when over threshold: summarize the older transcript, flush that
+ * summary to memory, then replace the older messages with it (keeping the
+ * `keepRecent` tail verbatim). Both the summary and the flush complete before
+ * anything is dropped — a failure in either leaves the transcript untouched.
+ * The caller assigns `outcome.messages` back to the agent.
  */
 export async function maybeCompact({
   messages,
@@ -129,11 +124,18 @@ export async function maybeCompact({
   signal,
 }: MaybeCompactArgs): Promise<CompactionOutcome> {
   const tokensBefore = contextTokens(messages);
-  if (tokensBefore < resolveThreshold(policy.threshold)) {
+  if (
+    tokensBefore < resolveThreshold(policy.threshold) ||
+    messages.length <= policy.keepRecent // over threshold but nothing to drop
+  ) {
     return { compacted: false, messages, tokensBefore, tokensAfter: tokensBefore };
   }
-  if (flush) await flush(signal);
-  const compacted = await compactTranscript(messages, summarize, policy.keepRecent, signal);
+  const cut = messages.length - policy.keepRecent;
+  const older = messages.slice(0, cut);
+  const tail = messages.slice(cut);
+  const summary = await summarize(older, signal);
+  if (flush) await flush(summary, signal);
+  const compacted = [summaryMessage(summary), ...tail];
   return {
     compacted: true,
     messages: compacted,

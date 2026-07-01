@@ -1,6 +1,7 @@
 import { buildAgent } from "./agent.ts";
+import { type Summarizer, makeModelSummarizer, placeholderSummarizer } from "./compaction.ts";
 import { loadConfig } from "./config.ts";
-import { createLogger } from "./logger.ts";
+import { type Logger, createLogger } from "./logger.ts";
 import { SessionStore } from "./session/store.ts";
 import { TelegramBot } from "./telegram/bot.ts";
 import { TelegramClient } from "./telegram/client.ts";
@@ -13,6 +14,23 @@ import { TelegramClient } from "./telegram/client.ts";
  * the bot's active project; the bot drives `agent.prompt`). We break the cycle
  * with a mutable holder the `getActiveProject` callback closes over.
  */
+/**
+ * The production summarizer: the model-backed one, falling back to the
+ * model-free placeholder on failure. Compaction runs inside the turn (before
+ * the reply is sent), so a summarization error must degrade the summary, never
+ * drop the turn.
+ */
+function makeResilientSummarizer(model: Summarizer, logger: Logger): Summarizer {
+  return async (messages, signal) => {
+    try {
+      return await model(messages, signal);
+    } catch (error) {
+      logger.withError(error).warn("model summarization failed; falling back to placeholder");
+      return placeholderSummarizer(messages, signal);
+    }
+  };
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger({ level: config.logLevel, format: config.logFormat });
@@ -26,6 +44,7 @@ async function main(): Promise<void> {
   const bot = new TelegramBot(config, built, {
     client: new TelegramClient(config.telegramBotToken, fetch, logger),
     store: new SessionStore(config.sessionFile),
+    summarize: makeResilientSummarizer(makeModelSummarizer(built.model), logger),
     logger,
   });
   holder.bot = bot;

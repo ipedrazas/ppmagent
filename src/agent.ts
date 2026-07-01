@@ -44,6 +44,8 @@ function resolveModel(provider: string, modelId: string): Model<any> {
 
 export interface BuiltAgent {
   agent: Agent;
+  /** The resolved model the agent runs on — also used by the compaction summarizer. */
+  model: Model<any>;
   ppm: PpmClient;
   databox: DataboxClient;
   proteos: ProteosClient;
@@ -113,10 +115,11 @@ export function buildAgent(
     buildAskUserTool(ppm),
   ];
 
+  const model = overrides.model ?? resolveModel(config.provider, config.model);
   const agent = new Agent({
     initialState: {
       systemPrompt: SYSTEM_PROMPT,
-      model: overrides.model ?? resolveModel(config.provider, config.model),
+      model,
       tools,
     },
     transformContext: makeTransformContext({
@@ -130,5 +133,5 @@ export function buildAgent(
 
   traceTools(agent, logger);
 
-  return { agent, ppm, databox, proteos };
+  return { agent, model, ppm, databox, proteos };
 }

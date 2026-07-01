@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   COMPACTION_SENTINEL,
-  compactTranscript,
   maybeCompact,
   placeholderSummarizer,
   resolveThreshold,
@@ -39,24 +38,38 @@ describe("shouldCompactNow", () => {
   });
 });
 
-describe("compactTranscript", () => {
+describe("maybeCompact", () => {
   test("replaces older messages with a summary and keeps the recent tail", async () => {
-    const out = await compactTranscript(transcript(10), stub, 3);
-    expect(out.length).toBe(4); // 1 summary + 3 kept
-    const first = out[0];
+    const out = await maybeCompact({
+      messages: transcript(10),
+      policy: { threshold: 1, keepRecent: 3 },
+      summarize: stub,
+    });
+    expect(out.compacted).toBe(true);
+    expect(out.messages.length).toBe(4); // 1 summary + 3 kept
+    const first = out.messages[0];
     expect(first && "content" in first ? String(first.content) : "").toContain(COMPACTION_SENTINEL);
     expect(first && "content" in first ? String(first.content) : "").toContain("SUMMARY");
     // tail preserved verbatim
-    expect(out[3]).toEqual(transcript(10)[9]);
+    expect(out.messages[3]).toEqual(transcript(10)[9]);
   });
 
-  test("no-op when there is nothing to compact", async () => {
+  test("over threshold but nothing to drop: no compaction, flush not called", async () => {
+    let flushed = false;
     const input = transcript(2);
-    expect(await compactTranscript(input, stub, 5)).toBe(input);
+    const out = await maybeCompact({
+      messages: input,
+      policy: { threshold: 1, keepRecent: 5 },
+      summarize: stub,
+      flush: async () => {
+        flushed = true;
+      },
+    });
+    expect(out.compacted).toBe(false);
+    expect(out.messages).toBe(input);
+    expect(flushed).toBe(false);
   });
-});
 
-describe("maybeCompact", () => {
   test("below threshold: no compaction, flush not called", async () => {
     let flushed = false;
     const input = transcript(4);
@@ -73,20 +86,41 @@ describe("maybeCompact", () => {
     expect(flushed).toBe(false);
   });
 
-  test("over threshold: flushes then compacts", async () => {
-    let flushed = false;
+  test("over threshold: flushes the generated summary, then compacts", async () => {
+    let flushedSummary: string | undefined;
     const out = await maybeCompact({
       messages: transcript(8),
       policy: { threshold: 1, keepRecent: 2 },
       summarize: stub,
-      flush: async () => {
-        flushed = true;
+      flush: async (summary) => {
+        flushedSummary = summary;
       },
     });
-    expect(flushed).toBe(true);
+    expect(flushedSummary).toBe("SUMMARY"); // memory keeps what the transcript keeps
     expect(out.compacted).toBe(true);
     expect(out.messages.length).toBe(3); // 1 summary + 2 kept
     expect(out.tokensAfter).toBeLessThan(out.tokensBefore);
+  });
+
+  test("a summarizer failure leaves the transcript untouched (error propagates)", async () => {
+    let flushed = false;
+    let error: unknown;
+    try {
+      await maybeCompact({
+        messages: transcript(8),
+        policy: { threshold: 1, keepRecent: 2 },
+        summarize: async () => {
+          throw new Error("model down");
+        },
+        flush: async () => {
+          flushed = true;
+        },
+      });
+    } catch (e) {
+      error = e;
+    }
+    expect(String(error)).toContain("model down");
+    expect(flushed).toBe(false); // nothing flushed, nothing dropped
   });
 });
 

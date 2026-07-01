@@ -111,24 +111,25 @@ export class TelegramBot {
   }
 
   /**
-   * Compact the live transcript when it crosses `threshold` tokens, flushing a
-   * durable checkpoint to memory first, and assign the result back to the agent.
-   * Shared by the post-turn auto-compaction and the manual `/compact` command
-   * (which forces an attempt by passing a threshold of 1).
+   * Compact the live transcript when it crosses `threshold` tokens, flushing
+   * the generated summary to memory as a durable checkpoint, and assign the
+   * result back to the agent. Shared by the post-turn auto-compaction and the
+   * manual `/compact` command (which forces an attempt by passing a threshold
+   * of 1).
    */
   private async compact(threshold: number): Promise<CompactionOutcome> {
     const outcome = await maybeCompact({
       messages: this.built.agent.state.messages,
       policy: { threshold, keepRecent: DEFAULT_KEEP_RECENT },
       summarize: this.summarize,
-      flush: async () => {
+      flush: async (summary) => {
         if (this.state.activeProject) {
           await this.built.ppm.write([
             "conversation",
             "add",
             this.state.activeProject,
             "--content",
-            "Compaction checkpoint.",
+            `Compaction checkpoint.\n\n${summary}`,
           ]);
         }
       },
