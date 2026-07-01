@@ -159,5 +159,6 @@ tests/**/.compactroot-*
 /.session/
 tests/**/.sessroot-*
 tests/**/.tgroot-*
+tests/**/.traceroot-*
 
 data/

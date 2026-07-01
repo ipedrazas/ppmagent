@@ -9,6 +9,7 @@ import { buildMemoryTools } from "./memory/tools.ts";
 import { ProteosClient } from "./proteos/proteos.ts";
 import { buildProteosTools } from "./proteos/tools.ts";
 import { buildAskUserTool } from "./tools/ask-user.ts";
+import { type TraceRecorder, clipPayload } from "./trace/recorder.ts";
 import { DataboxClient } from "./tracker/databox.ts";
 import { buildTrackerTools } from "./tracker/tools.ts";
 
@@ -61,18 +62,29 @@ export interface BuildAgentOverrides {
   streamFn?: StreamFn;
   /** Root logger; child loggers are derived for the clients and tool tracing. */
   logger?: Logger;
+  /** Session trace sink; tool start/end events are recorded when present. */
+  recorder?: TraceRecorder;
 }
 
 /**
- * Subscribe a logger to the agent's tool-execution events: one `debug` line when
- * a tool starts and one when it ends (escalated to `warn` when the tool errored).
- * Returns the unsubscribe handle (left attached for the process lifetime).
+ * Subscribe to the agent's tool-execution events: one `debug` log line when a
+ * tool starts and one when it ends (escalated to `warn` when the tool errored),
+ * plus a trace event for each when a recorder is present (args clipped; results
+ * are not recorded — they already live in the transcript, the trace only needs
+ * the outcome). Returns the unsubscribe handle (left attached for the process
+ * lifetime).
  */
-function traceTools(agent: Agent, logger: Logger): () => void {
+function traceTools(agent: Agent, logger: Logger, recorder?: TraceRecorder): () => void {
   const log = logger.child().withContext({ component: "agent" });
   return agent.subscribe((event) => {
     if (event.type === "tool_execution_start") {
       log.withMetadata({ tool: event.toolName, toolCallId: event.toolCallId }).debug("tool start");
+      recorder?.record({
+        type: "tool_start",
+        tool: event.toolName,
+        toolCallId: event.toolCallId,
+        args: clipPayload(event.args),
+      });
     } else if (event.type === "tool_execution_end") {
       const line = log.withMetadata({
         tool: event.toolName,
@@ -81,6 +93,12 @@ function traceTools(agent: Agent, logger: Logger): () => void {
       });
       if (event.isError) line.warn("tool end (error)");
       else line.debug("tool end");
+      recorder?.record({
+        type: "tool_end",
+        tool: event.toolName,
+        toolCallId: event.toolCallId,
+        isError: event.isError,
+      });
     }
   });
 }
@@ -131,7 +149,7 @@ export function buildAgent(
     getApiKey: () => config.apiKey,
   });
 
-  traceTools(agent, logger);
+  traceTools(agent, logger, overrides.recorder);
 
   return { agent, model, ppm, databox, proteos };
 }

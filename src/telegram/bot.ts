@@ -12,6 +12,7 @@ import type { Config } from "../config.ts";
 import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import { type SessionState, type SessionStore, newSession, shortId } from "../session/store.ts";
+import type { TraceRecorder } from "../trace/recorder.ts";
 import type { TelegramClient } from "./client.ts";
 
 /** One-line label for a session in listings: `<short> "name" — N msgs, project`. */
@@ -33,6 +34,8 @@ export interface TelegramBotDeps {
   store: SessionStore;
   /** Transcript summarizer used at compaction. Defaults to the model-free one. */
   summarize?: Summarizer;
+  /** Session trace sink (turn/command/compaction events). Absent = no tracing. */
+  recorder?: TraceRecorder;
   /** Root logger; a `component: telegram-bot` child is derived. Defaults to discarding. */
   logger?: Logger;
 }
@@ -91,6 +94,7 @@ export class TelegramBot {
     // Restore the durable session into the live agent.
     this.state = deps.store.load() ?? newSession();
     this.built.agent.state.messages = this.state.messages;
+    deps.recorder?.setSession(this.state.sessionId);
   }
 
   /** Active project for the current chat — read by the memory injection seam. */
@@ -108,6 +112,7 @@ export class TelegramBot {
   private switchTo(state: SessionState): void {
     this.state = state;
     this.built.agent.state.messages = state.messages;
+    this.deps.recorder?.setSession(state.sessionId);
   }
 
   /**
@@ -134,7 +139,16 @@ export class TelegramBot {
         }
       },
     });
-    if (outcome.compacted) this.built.agent.state.messages = outcome.messages;
+    if (outcome.compacted) {
+      this.built.agent.state.messages = outcome.messages;
+      this.deps.recorder?.record({
+        type: "compaction",
+        tokensBefore: outcome.tokensBefore,
+        tokensAfter: outcome.tokensAfter,
+        messagesAfter: outcome.messages.length,
+        threshold,
+      });
+    }
     return outcome;
   }
 
@@ -244,6 +258,12 @@ export class TelegramBot {
   async handleMessage(chatId: number, text: string): Promise<string[]> {
     const trimmed = text.trim();
 
+    // Trace every slash command uniformly (name + arg); turns are traced below.
+    if (trimmed.startsWith("/")) {
+      const [command = "", ...rest] = trimmed.split(/\s+/);
+      this.deps.recorder?.record({ type: "command", command, arg: rest.join(" ") || undefined });
+    }
+
     if (trimmed.startsWith("/project")) {
       const slug = trimmed.slice("/project".length).trim();
       const reply = slug ? `Active project set to "${slug}".` : "Usage: /project <slug>";
@@ -337,6 +357,12 @@ export class TelegramBot {
     const turnLog = this.log.withContext({ chatId, project: this.state.activeProject });
     turnLog.withMetadata({ chars: text.length }).info("handling message");
     const startedAt = performance.now();
+    this.deps.recorder?.record({
+      type: "turn_start",
+      chatId,
+      chars: text.length,
+      project: this.state.activeProject,
+    });
 
     const outbound: string[] = [];
     const unsubscribe = this.built.agent.subscribe((event) => {
@@ -349,6 +375,11 @@ export class TelegramBot {
       await this.built.agent.prompt(text);
     } catch (error) {
       turnLog.withError(error).error("agent turn failed");
+      this.deps.recorder?.record({
+        type: "turn_end",
+        durationMs: Math.round(performance.now() - startedAt),
+        error: String(error),
+      });
       throw error;
     } finally {
       unsubscribe();
@@ -366,12 +397,9 @@ export class TelegramBot {
 
     if (outbound.length === 0) outbound.push("(no reply)");
     await this.send(chatId, outbound);
-    turnLog
-      .withMetadata({
-        replies: outbound.length,
-        durationMs: Math.round(performance.now() - startedAt),
-      })
-      .info("message handled");
+    const durationMs = Math.round(performance.now() - startedAt);
+    this.deps.recorder?.record({ type: "turn_end", durationMs, replies: outbound.length });
+    turnLog.withMetadata({ replies: outbound.length, durationMs }).info("message handled");
     return outbound;
   }
 

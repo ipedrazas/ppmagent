@@ -1,3 +1,4 @@
+import { dirname, join } from "node:path";
 import { buildAgent } from "./agent.ts";
 import { type Summarizer, makeModelSummarizer, placeholderSummarizer } from "./compaction.ts";
 import { loadConfig } from "./config.ts";
@@ -5,6 +6,7 @@ import { type Logger, createLogger } from "./logger.ts";
 import { SessionStore } from "./session/store.ts";
 import { TelegramBot } from "./telegram/bot.ts";
 import { TelegramClient } from "./telegram/client.ts";
+import { TraceRecorder } from "./trace/recorder.ts";
 
 /**
  * Entrypoint: load config → build the agent (memory injection reads the active
@@ -38,13 +40,18 @@ async function main(): Promise<void> {
     .withMetadata({ provider: config.provider, model: config.model, logLevel: config.logLevel })
     .info("ppmagent starting");
 
+  // Session traces live beside the sessions themselves; analyzed offline with
+  // `bun run trace` (src/trace/extract.ts).
+  const recorder = new TraceRecorder(join(dirname(config.sessionFile), "traces"), logger);
+
   const holder: { bot?: TelegramBot } = {};
-  const built = buildAgent(config, () => holder.bot?.getActiveProject(), { logger });
+  const built = buildAgent(config, () => holder.bot?.getActiveProject(), { logger, recorder });
 
   const bot = new TelegramBot(config, built, {
     client: new TelegramClient(config.telegramBotToken, fetch, logger),
     store: new SessionStore(config.sessionFile),
     summarize: makeResilientSummarizer(makeModelSummarizer(built.model), logger),
+    recorder,
     logger,
   });
   holder.bot = bot;
