@@ -13,6 +13,32 @@ import { type TraceRecorder, clipPayload } from "./trace/recorder.ts";
 import { DataboxClient } from "./tracker/databox.ts";
 import { buildTrackerTools } from "./tracker/tools.ts";
 
+/**
+ * Tools that write state — tracker mutations, memory writes, git operations, and
+ * task dispatch. These are logged at `info` level so there is a clear audit trail
+ * of every state-changing action the agent takes. Read-only tools stay at `debug`.
+ */
+const MUTATING_TOOLS = new Set<string>([
+  // tracker writes
+  "tracker_create_task",
+  "tracker_update_task",
+  "tracker_create_project",
+  "tracker_update_project",
+  // memory writes
+  "memory_write",
+  "memory_create_project",
+  // proteos mutations (clone, run, send, cancel, branch, commit, push, PR)
+  "proteos_project_clone",
+  "proteos_project_ensure",
+  "proteos_task_run",
+  "proteos_task_send",
+  "proteos_task_cancel",
+  "proteos_git_branch",
+  "proteos_git_commit",
+  "proteos_git_push",
+  "proteos_git_pr",
+]);
+
 export const SYSTEM_PROMPT = `You are a Project / Product-Owner agent. You turn vague requests into well-scoped tracker tasks and keep structured, human-readable memory.
 
 Tracker entities:
@@ -69,18 +95,25 @@ export interface BuildAgentOverrides {
 }
 
 /**
- * Subscribe to the agent's tool-execution events: one `debug` log line when a
- * tool starts and one when it ends (escalated to `warn` when the tool errored),
- * plus a trace event for each when a recorder is present (args clipped; results
- * are not recorded — they already live in the transcript, the trace only needs
- * the outcome). Returns the unsubscribe handle (left attached for the process
- * lifetime).
+ * Subscribe to the agent's tool-execution events: one log line when a tool
+ * starts and one when it ends. Mutating tools (writes, git ops, task dispatch)
+ * are logged at `info` for an audit trail; read-only tools stay at `debug`.
+ * Errors are always `warn`. A trace event is also recorded when a recorder is
+ * present (args clipped; results are not recorded — they live in the transcript).
+ * Returns the unsubscribe handle (left attached for the process lifetime).
  */
 function traceTools(agent: Agent, logger: Logger, recorder?: TraceRecorder): () => void {
   const log = logger.child().withContext({ component: "agent" });
   return agent.subscribe((event) => {
     if (event.type === "tool_execution_start") {
-      log.withMetadata({ tool: event.toolName, toolCallId: event.toolCallId }).debug("tool start");
+      const isMutating = MUTATING_TOOLS.has(event.toolName);
+      const meta = log.withMetadata({
+        tool: event.toolName,
+        toolCallId: event.toolCallId,
+        ...(isMutating ? { params: clipPayload(event.args) } : {}),
+      });
+      if (isMutating) meta.info("tool start");
+      else meta.debug("tool start");
       recorder?.record({
         type: "tool_start",
         tool: event.toolName,
@@ -88,12 +121,14 @@ function traceTools(agent: Agent, logger: Logger, recorder?: TraceRecorder): () 
         args: clipPayload(event.args),
       });
     } else if (event.type === "tool_execution_end") {
+      const isMutating = MUTATING_TOOLS.has(event.toolName);
       const line = log.withMetadata({
         tool: event.toolName,
         toolCallId: event.toolCallId,
         isError: event.isError,
       });
       if (event.isError) line.warn("tool end (error)");
+      else if (isMutating) line.info("tool end");
       else line.debug("tool end");
       recorder?.record({
         type: "tool_end",
@@ -146,6 +181,7 @@ export function buildAgent(
       ppm,
       recent: config.contextRecent,
       getActiveProject,
+      logger,
     }),
     streamFn: overrides.streamFn,
     getApiKey: () => config.apiKey,
