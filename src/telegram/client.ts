@@ -147,4 +147,13 @@ export class TelegramClient {
       return;
     }
   }
+
+  /** Show a transient status (e.g. "typing") in the chat. Expires after ~5 s. */
+  async sendChatAction(chatId: number, action: string): Promise<void> {
+    await this.fetchImpl(`${this.base}/sendChatAction`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, action }),
+    });
+  }
 }
