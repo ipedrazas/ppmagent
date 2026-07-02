@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { UserMessage } from "@earendil-works/pi-ai";
+import { type Logger, nullLogger } from "../logger.ts";
 import type { PpmClient } from "./ppm.ts";
 
 /**
@@ -14,6 +15,8 @@ export interface TransformContextOptions {
   recent: number;
   /** Resolves the active project slug for the current turn (per Telegram chat). */
   getActiveProject: () => string | undefined;
+  /** Logger for surfacing context-injection failures. Defaults to discarding. */
+  logger?: Logger;
 }
 
 function isInjectedSlice(message: AgentMessage): boolean {
@@ -40,6 +43,7 @@ function injectedMessage(body: string): UserMessage {
  * project it leaves the transcript untouched.
  */
 export function makeTransformContext(opts: TransformContextOptions) {
+  const log = (opts.logger ?? nullLogger).child().withContext({ component: "context" });
   return async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
     const withoutPrior = messages.filter((m) => !isInjectedSlice(m));
 
@@ -49,8 +53,13 @@ export function makeTransformContext(opts: TransformContextOptions) {
     try {
       const env = await opts.ppm.context(project, opts.recent, signal);
       return [injectedMessage(env.message), ...withoutPrior];
-    } catch {
-      // A memory-read failure must not break the turn; proceed without the slice.
+    } catch (error) {
+      // Memory-read failure must not break the turn — degrade gracefully without
+      // the context slice, but surface the error so it is not silently swallowed.
+      log
+        .withError(error)
+        .withMetadata({ project })
+        .warn("context injection failed; proceeding without slice");
       return withoutPrior;
     }
   };

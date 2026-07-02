@@ -14,6 +14,24 @@ import { type Logger, nullLogger } from "../logger.ts";
 import { type SessionState, type SessionStore, newSession, shortId } from "../session/store.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
 import type { TelegramClient } from "./client.ts";
+import { toMarkdownV2 } from "./mdv2.ts";
+
+/** Full list of available slash commands, one line each. */
+function helpText(): string {
+  return [
+    "Available commands:",
+    "/project <slug> — switch active project",
+    "/context — show context token usage",
+    "/compact — compact the transcript",
+    "/new [name] — start a fresh session",
+    "/name <name> — label current session",
+    "/session — show session details",
+    "/tools — report CLI tool versions",
+    "/resume [id|name] — list or switch sessions",
+    "/cancel — cancel an in-flight turn",
+    "/help — show this message",
+  ].join("\n");
+}
 
 /** One-line label for a session in listings: `<short> "name" — N msgs, project`. */
 function sessionLabel(s: {
@@ -75,6 +93,8 @@ function lastAssistantText(messages: AgentMessage[]): string {
 export class TelegramBot {
   private state: SessionState;
   private running = false;
+  /** Promise for the currently running agent turn, if any. */
+  private activeTurn: Promise<void> | null = null;
   /** Aborts the in-flight long-poll so {@link stop} returns promptly. */
   private readonly abort = new AbortController();
   private readonly summarize: Summarizer;
@@ -248,7 +268,17 @@ export class TelegramBot {
   }
 
   private async send(chatId: number, messages: string[]): Promise<void> {
-    for (const text of messages) await this.deps.client.sendMessage(chatId, text);
+    for (const text of messages) {
+      const formatted = toMarkdownV2(text);
+      try {
+        await this.deps.client.sendMessage(chatId, formatted, "MarkdownV2");
+      } catch {
+        // MarkdownV2 was rejected by Telegram (e.g. malformed entity) — retry
+        // as plain text so the message is never silently dropped.
+        this.log.withMetadata({ chatId }).warn("MarkdownV2 send failed; retrying as plain text");
+        await this.deps.client.sendMessage(chatId, text);
+      }
+    }
   }
 
   /**
@@ -354,6 +384,21 @@ export class TelegramBot {
       return [reply];
     }
 
+    if (trimmed === "/cancel") {
+      // When called from the poll loop while a turn is active, the poll loop
+      // aborts the agent before routing here. When there is nothing to cancel
+      // (direct call, or no turn in flight), report it.
+      const reply = "No active turn to cancel.";
+      await this.send(chatId, [reply]);
+      return [reply];
+    }
+
+    if (trimmed === "/help") {
+      const reply = helpText();
+      await this.send(chatId, [reply]);
+      return [reply];
+    }
+
     const turnLog = this.log.withContext({ chatId, project: this.state.activeProject });
     turnLog.withMetadata({ chars: text.length }).info("handling message");
     const startedAt = performance.now();
@@ -365,6 +410,14 @@ export class TelegramBot {
     });
 
     const outbound: string[] = [];
+
+    // Show a typing indicator and refresh every 4.5 s (Telegram expires it after 5 s).
+    const sendTyping = (): void => {
+      void this.deps.client.sendChatAction(chatId, "typing").catch(() => {});
+    };
+    sendTyping();
+    const typingInterval = setInterval(sendTyping, 4500);
+
     const unsubscribe = this.built.agent.subscribe((event) => {
       if (event.type === "tool_execution_end" && event.toolName === "ask_user") {
         const question = askUserText(event.result);
@@ -382,6 +435,7 @@ export class TelegramBot {
       });
       throw error;
     } finally {
+      clearInterval(typingInterval);
       unsubscribe();
     }
 
@@ -419,7 +473,9 @@ export class TelegramBot {
     while (this.running) {
       let updates: Awaited<ReturnType<TelegramClient["getUpdates"]>>;
       try {
-        updates = await this.deps.client.getUpdates(offset, 25, this.abort.signal);
+        // Short-poll while a turn is running so /cancel is noticed within ~1 s.
+        const pollTimeout = this.activeTurn ? 1 : 25;
+        updates = await this.deps.client.getUpdates(offset, pollTimeout, this.abort.signal);
         backoffMs = 0; // healthy poll — reset the backoff
       } catch (error) {
         // `stop()` aborts the poll to shut down fast; that surfaces here as an
@@ -453,9 +509,49 @@ export class TelegramBot {
           await this.send(message.chatId, [msg]).catch((sendErr) => {
             this.log.withError(sendErr).error("failed to notify user of turn error");
           });
+
+        // /cancel: abort the active turn (if any) and acknowledge — handled here
+        // in the poll loop so it can interrupt an in-flight turn without waiting
+        // for it to finish first.
+        if (message.text.trim() === "/cancel") {
+          const wasCancelled = this.activeTurn !== null;
+          if (wasCancelled) {
+            this.built.agent.abort();
+            await this.activeTurn;
+            this.activeTurn = null;
+          }
+          const reply = wasCancelled ? "Cancelled." : "No active turn to cancel.";
+          this.log.withMetadata({ chatId: message.chatId, wasCancelled }).info("cancel command");
+          await this.deps.client.sendMessage(message.chatId, reply).catch(() => {});
+          continue;
         }
+
+        // If a turn is in flight, wait for it before starting another — the bot
+        // is single-tenant so interleaving turns would corrupt the transcript.
+        if (this.activeTurn) {
+          await this.activeTurn;
+          this.activeTurn = null;
+        }
+
+        // Launch the turn as a background task so the poll loop remains
+        // responsive (e.g. to /cancel) while the agent is processing.
+        const turn: Promise<void> = this.handleMessage(message.chatId, message.text).then(
+          () => {},
+          (error) => {
+            this.log
+              .withError(error)
+              .withMetadata({ chatId: message.chatId })
+              .error("turn dropped");
+          },
+        );
+        this.activeTurn = turn;
+        void turn.then(() => {
+          if (this.activeTurn === turn) this.activeTurn = null;
+        });
       }
     }
+    // Drain any in-flight turn before the process exits.
+    if (this.activeTurn) await this.activeTurn;
   }
 
   /** Sleep `ms`, resolving early if {@link stop} aborts in the meantime. */
