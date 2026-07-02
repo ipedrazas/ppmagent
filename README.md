@@ -118,6 +118,50 @@ All configuration is environment-driven; see [`.env.example`](.env.example) for
 the full, documented list. Secrets (Anthropic key, Telegram bot token, Databox
 auth) stay in the environment and are never committed.
 
+### Telegram chat allowlist (required)
+
+The bot **fails to start** unless you tell it which chat it may answer. This is
+a deliberate safety gate: the agent can create tracker issues, dispatch coding
+agents, and push code, so it must never be open to whoever discovers the bot's
+handle. Missing this is the most common first-run crash:
+
+```
+Missing required environment variable: PPMA_TELEGRAM_ALLOWED_CHAT_ID
+(or set PPMA_ALLOW_ANY_CHAT=true to explicitly run the bot open to all chats)
+```
+
+Set exactly one of:
+
+| Variable | Meaning |
+|---|---|
+| `PPMA_TELEGRAM_ALLOWED_CHAT_ID` | The single chat id the bot answers to. Group chat ids are negative (e.g. `-1001234567890`). |
+| `PPMA_ALLOW_ANY_CHAT=true` | Explicit opt-in to answer **any** chat. Only for throwaway/local testing — never in production. |
+
+#### How to find your chat id
+
+Message the bot (or add it to your group and send a message), then read the id
+back from Telegram's API. Using your bot token:
+
+```sh
+curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates" \
+  | grep -o '"chat":{"id":[-0-9]*'
+```
+
+The number after `"id":` is your chat id — positive for a direct message with
+the bot, negative for a group. Put it in `PPMA_TELEGRAM_ALLOWED_CHAT_ID`.
+
+Alternatively, from the **mobile or desktop Telegram app**:
+
+1. Start a chat with [`@userinfobot`](https://t.me/userinfobot) (or
+   `@getidsbot`) and send any message — it replies with your numeric user id,
+   which is the chat id for a 1:1 conversation with your bot.
+2. For a **group**, add `@getidsbot` to the group; it posts the group's chat id
+   (the negative number). You can remove it afterwards.
+
+> Tip: `getUpdates` only returns messages received after the bot last started
+> and while no webhook is set. If it comes back empty, send the bot a fresh
+> message and retry.
+
 ## Project layout
 
 ```
