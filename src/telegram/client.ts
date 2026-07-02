@@ -40,18 +40,12 @@ export class TelegramClient {
    * Pass `signal` to abort an in-flight poll (used to shut down promptly on
    * SIGTERM rather than blocking up to `timeoutSec`).
    */
-  async getUpdates(
-    offset: number,
-    timeoutSec = 25,
-    signal?: AbortSignal,
-  ): Promise<Update[]> {
+  async getUpdates(offset: number, timeoutSec = 25, signal?: AbortSignal): Promise<Update[]> {
     const url = `${this.base}/getUpdates?offset=${offset}&timeout=${timeoutSec}`;
     // HTTP-level timeout: long-poll duration + buffer for network overhead
     const httpTimeoutMs = (timeoutSec + 5) * 1000;
     const timeoutSignal = AbortSignal.timeout(httpTimeoutMs);
-    const effectiveSignal = signal
-      ? AbortSignal.any([signal, timeoutSignal])
-      : timeoutSignal;
+    const effectiveSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     const res = await this.fetchImpl(url, { signal: effectiveSignal });
     const body = (await res.json()) as {
       ok: boolean;
@@ -67,19 +61,14 @@ export class TelegramClient {
       // container instance overlapping a restart). Throw so the caller backs
       // off instead of re-polling in a tight loop, which pegs CPU and grows
       // memory until the process is OOM-killed.
-      throw new Error(
-        `getUpdates failed: ${body.description ?? `ok=${body.ok}`}`,
-      );
+      throw new Error(`getUpdates failed: ${body.description ?? `ok=${body.ok}`}`);
     }
     return body.result.map((u) => {
       const chatId = u.message?.chat?.id;
       const text = u.message?.text;
       return {
         updateId: u.update_id,
-        message:
-          chatId !== undefined && text !== undefined
-            ? { chatId, text }
-            : undefined,
+        message: chatId !== undefined && text !== undefined ? { chatId, text } : undefined,
       };
     });
   }
@@ -141,9 +130,7 @@ export class TelegramClient {
         this.log
           .withMetadata({ chatId, retryAfter, attempt })
           .warn("sendMessage rate limited, will retry");
-        await new Promise<void>((resolve) =>
-          setTimeout(resolve, retryAfter * 1000),
-        );
+        await new Promise<void>((resolve) => setTimeout(resolve, retryAfter * 1000));
         continue;
       }
       if (!res.ok) {

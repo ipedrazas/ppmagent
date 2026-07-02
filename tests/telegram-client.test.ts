@@ -49,11 +49,7 @@ describe("TelegramClient.getUpdates", () => {
       return new Response(JSON.stringify({ ok: true, result: [] }));
     };
     const controller = new AbortController();
-    await new TelegramClient("token", fetchStub).getUpdates(
-      0,
-      25,
-      controller.signal,
-    );
+    await new TelegramClient("token", fetchStub).getUpdates(0, 25, controller.signal);
     expect(capturedInit?.signal).toBeDefined();
     // Aborting the controller should also abort the combined signal
     controller.abort();
@@ -131,19 +127,15 @@ describe("TelegramClient.sendMessage", () => {
     const fetchStub: FetchLike = async () => {
       callCount++;
       if (callCount === 1) {
-        return new Response(
-          JSON.stringify({ ok: false, parameters: { retry_after: 2 } }),
-          {
-            status: 429,
-          },
-        );
+        return new Response(JSON.stringify({ ok: false, parameters: { retry_after: 2 } }), {
+          status: 429,
+        });
       }
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     };
 
     await new TelegramClient("token", fetchStub).sendMessage(1, "hello");
-    (globalThis as unknown as Record<string, unknown>).setTimeout =
-      origSetTimeout;
+    (globalThis as unknown as Record<string, unknown>).setTimeout = origSetTimeout;
 
     expect(callCount).toBe(2);
     expect(delays).toEqual([2000]);
@@ -171,8 +163,7 @@ describe("TelegramClient.sendMessage", () => {
     };
 
     await new TelegramClient("token", fetchStub).sendMessage(1, "hello");
-    (globalThis as unknown as Record<string, unknown>).setTimeout =
-      origSetTimeout;
+    (globalThis as unknown as Record<string, unknown>).setTimeout = origSetTimeout;
 
     expect(delays).toEqual([5000]);
   });
