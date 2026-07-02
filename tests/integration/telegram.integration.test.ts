@@ -35,6 +35,7 @@ function testConfig(root: string): Config {
     dbxcliConfig: "",
     proteosBin: "proteos",
     proteosUrl: "",
+    proteosWatchIntervalMs: 30_000,
     telegramBotToken: "test",
     telegramAllowedChatId: undefined,
     sessionFile: join(root, "session.json"),
