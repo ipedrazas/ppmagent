@@ -468,7 +468,7 @@ export class TelegramBot {
     this.log
       .withMetadata({ allowedChatId: this.allowedChatId, activeProject: this.state.activeProject })
       .info("bot started; long-polling for updates");
-    let offset = 0;
+    let offset = this.deps.store.loadOffset();
     let backoffMs = 0;
     while (this.running) {
       let updates: Awaited<ReturnType<TelegramClient["getUpdates"]>>;
@@ -491,6 +491,7 @@ export class TelegramBot {
       }
       for (const update of updates) {
         offset = update.updateId + 1;
+        this.deps.store.saveOffset(offset);
         const message = update.message;
         if (!message) continue;
         if (this.allowedChatId !== undefined && message.chatId !== this.allowedChatId) {
