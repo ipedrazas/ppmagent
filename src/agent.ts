@@ -90,6 +90,8 @@ export interface BuildAgentOverrides {
   logger?: Logger;
   /** Session trace sink; tool start/end events are recorded when present. */
   recorder?: TraceRecorder;
+  /** Called after `proteos_task_run` dispatches a task (for background monitoring). */
+  onTaskDispatched?: (machine: string, taskId: string, project: string, label: string) => void;
 }
 
 /**
@@ -164,7 +166,7 @@ export function buildAgent(
   const tools = [
     ...buildMemoryTools(ppm),
     ...buildTrackerTools(databox),
-    ...buildProteosTools(proteos),
+    ...buildProteosTools(proteos, { onTaskDispatched: overrides.onTaskDispatched }),
     buildAskUserTool(ppm),
   ];
 
