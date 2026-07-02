@@ -15,6 +15,9 @@ export interface Update {
 /** Injectable fetch so the client is unit-testable without a network. */
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
+/** Telegram message formatting mode; omitted means plain text. */
+export type ParseMode = "MarkdownV2" | "HTML" | "Markdown";
+
 const MAX_MESSAGE_LENGTH = 4096;
 const DEFAULT_SEND_TIMEOUT_MS = 30_000;
 const MAX_RATE_LIMIT_RETRIES = 5;
@@ -73,9 +76,9 @@ export class TelegramClient {
     });
   }
 
-  async sendMessage(chatId: number, text: string): Promise<void> {
+  async sendMessage(chatId: number, text: string, parseMode?: ParseMode): Promise<void> {
     for (const chunk of this.chunkText(text)) {
-      await this.sendChunk(chatId, chunk);
+      await this.sendChunk(chatId, chunk, parseMode);
     }
   }
 
@@ -108,12 +111,15 @@ export class TelegramClient {
     return chunks;
   }
 
-  private async sendChunk(chatId: number, text: string): Promise<void> {
+  private async sendChunk(chatId: number, text: string, parseMode?: ParseMode): Promise<void> {
+    const payload = parseMode
+      ? { chat_id: chatId, text, parse_mode: parseMode }
+      : { chat_id: chatId, text };
     for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
       const res = await this.fetchImpl(`${this.base}/sendMessage`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text }),
+        body: JSON.stringify(payload),
         signal: AbortSignal.timeout(this.sendTimeoutMs),
       });
       if (res.status === 429) {
