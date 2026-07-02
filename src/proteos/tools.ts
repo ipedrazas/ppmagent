@@ -1,12 +1,16 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, toolResult } from "../tool-helpers.ts";
+import { CONFIRM_SUFFIX, type ConfirmationStore } from "../tools/confirmation.ts";
+import { sanitizeLine, sanitizeString } from "../tools/sanitize.ts";
 import type { ProteosClient } from "./proteos.ts";
 import { extractTaskId } from "./watcher.ts";
 
 export interface ProteosToolsOptions {
   /** Called after a task is dispatched so the background watcher can track it. */
   onTaskDispatched?: (machine: string, taskId: string, project: string, label: string) => void;
+  /** When set, git push and git PR require user confirmation before executing. */
+  confirmationStore?: ConfirmationStore;
 }
 
 /**
@@ -283,7 +287,12 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
       paths: Type.Optional(Type.Array(Type.String())),
     }),
     execute: async (_id, params, signal) => {
-      const out = await proteos.gitCommit(params, signal);
+      const sanitized = {
+        ...params,
+        message: sanitizeString(params.message),
+        paths: params.paths?.map((p) => sanitizeLine(p)),
+      };
+      const out = await proteos.gitCommit(sanitized, signal);
       return toolResult(out, { output: out });
     },
   });
@@ -300,7 +309,25 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
       setUpstream: Type.Optional(Type.Boolean()),
     }),
     execute: async (_id, params, signal) => {
-      const out = await proteos.gitPush(params, signal);
+      const sanitized = {
+        ...params,
+        machine: sanitizeLine(params.machine),
+        project: sanitizeLine(params.project),
+        branch: sanitizeLine(params.branch),
+      };
+
+      if (opts?.confirmationStore) {
+        const lines = [
+          `Push branch '${sanitized.branch}' to origin`,
+          `  Machine: ${sanitized.machine}, Project: ${sanitized.project}`,
+        ];
+        if (sanitized.setUpstream) lines.push("  Set upstream: yes");
+        const description = lines.join("\n");
+        opts.confirmationStore.set(description, (s) => proteos.gitPush(sanitized, s));
+        return toolResult(`${description}${CONFIRM_SUFFIX}`, { output: "" }, { terminate: true });
+      }
+
+      const out = await proteos.gitPush(sanitized, signal);
       return toolResult(out, { output: out });
     },
   });
@@ -319,7 +346,29 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
       body: Type.Optional(Type.String()),
     }),
     execute: async (_id, params, signal) => {
-      const out = await proteos.gitPr(params, signal);
+      const sanitized = {
+        ...params,
+        machine: sanitizeLine(params.machine),
+        project: sanitizeLine(params.project),
+        head: sanitizeLine(params.head),
+        title: sanitizeLine(params.title),
+        base: params.base !== undefined ? sanitizeLine(params.base) : undefined,
+        body: params.body !== undefined ? sanitizeString(params.body) : undefined,
+      };
+
+      if (opts?.confirmationStore) {
+        const base = sanitized.base ?? "default branch";
+        const lines = [
+          `Open pull request '${sanitized.head}' → ${base}`,
+          `  Title: "${sanitized.title}"`,
+          `  Machine: ${sanitized.machine}, Project: ${sanitized.project}`,
+        ];
+        const description = lines.join("\n");
+        opts.confirmationStore.set(description, (s) => proteos.gitPr(sanitized, s));
+        return toolResult(`${description}${CONFIRM_SUFFIX}`, { output: "" }, { terminate: true });
+      }
+
+      const out = await proteos.gitPr(sanitized, signal);
       return toolResult(out, { output: out });
     },
   });

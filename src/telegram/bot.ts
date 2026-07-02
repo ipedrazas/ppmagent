@@ -12,6 +12,7 @@ import type { Config } from "../config.ts";
 import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import { type SessionState, type SessionStore, newSession, shortId } from "../session/store.ts";
+import { type ConfirmationStore, isApproval, isRejection } from "../tools/confirmation.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
 import type { TelegramClient } from "./client.ts";
 import { toMarkdownV2 } from "./mdv2.ts";
@@ -56,14 +57,21 @@ export interface TelegramBotDeps {
   recorder?: TraceRecorder;
   /** Root logger; a `component: telegram-bot` child is derived. Defaults to discarding. */
   logger?: Logger;
+  /** When set, the bot intercepts yes/no replies to drive the confirmation gate. */
+  confirmationStore?: ConfirmationStore;
 }
 
-/** Extract the visible text of an `ask_user` tool result. */
-function askUserText(result: unknown): string {
+/** Extract the visible text from a tool result that carries content blocks. */
+function extractToolText(result: unknown): string {
   const content = (result as { content?: Array<{ type?: string; text?: string }> } | undefined)
     ?.content;
   if (!Array.isArray(content)) return "";
   return content.find((c) => c?.type === "text")?.text ?? "";
+}
+
+/** True when the tool result sets terminate:true (stops the agent loop). */
+function isTerminating(result: unknown): boolean {
+  return (result as { terminate?: boolean } | undefined)?.terminate === true;
 }
 
 /** Concatenated text of the most recent assistant message, if any. */
@@ -100,6 +108,7 @@ export class TelegramBot {
   private readonly summarize: Summarizer;
   private readonly allowedChatId: number | undefined;
   private readonly log: Logger;
+  private readonly confirmationStore?: ConfirmationStore;
 
   constructor(
     private readonly config: Config,
@@ -111,6 +120,7 @@ export class TelegramBot {
     // Validated at config load; `undefined` only via the explicit
     // PPMA_ALLOW_ANY_CHAT opt-out (warned about loudly in start()).
     this.allowedChatId = config.telegramAllowedChatId;
+    this.confirmationStore = deps.confirmationStore;
     // Restore the durable session into the live agent.
     this.state = deps.store.load() ?? newSession();
     this.built.agent.state.messages = this.state.messages;
@@ -386,9 +396,11 @@ export class TelegramBot {
 
     if (trimmed === "/cancel") {
       // When called from the poll loop while a turn is active, the poll loop
-      // aborts the agent before routing here. When there is nothing to cancel
-      // (direct call, or no turn in flight), report it.
-      const reply = "No active turn to cancel.";
+      // aborts the agent before routing here. This branch handles the direct
+      // call case (no turn in flight) — we still clear any pending confirmation.
+      const hadConfirmation = this.confirmationStore?.hasPending() ?? false;
+      if (hadConfirmation) this.confirmationStore?.clear();
+      const reply = hadConfirmation ? "Cancelled." : "No active turn to cancel.";
       await this.send(chatId, [reply]);
       return [reply];
     }
@@ -409,6 +421,47 @@ export class TelegramBot {
       project: this.state.activeProject,
     });
 
+    // Confirmation gate: intercept yes/no replies before starting a new agent turn.
+    const pending = this.confirmationStore?.get();
+    if (pending) {
+      if (this.confirmationStore?.isExpired()) {
+        this.confirmationStore.clear();
+        const reply = "Confirmation timed out — the operation was cancelled.";
+        await this.send(chatId, [reply]);
+        return [reply];
+      }
+      if (isApproval(trimmed)) {
+        const sendTyping = (): void => {
+          void this.deps.client.sendChatAction(chatId, "typing").catch(() => {});
+        };
+        sendTyping();
+        const typingInterval = setInterval(sendTyping, 4500);
+        try {
+          const result = await pending.execute(this.abort.signal);
+          this.confirmationStore?.clear();
+          await this.send(chatId, [result]);
+          return [result];
+        } catch (error) {
+          this.confirmationStore?.clear();
+          const errorMsg = `Operation failed: ${error instanceof Error ? error.message : String(error)}`;
+          await this.send(chatId, [errorMsg]);
+          return [errorMsg];
+        } finally {
+          clearInterval(typingInterval);
+        }
+      }
+      if (isRejection(trimmed)) {
+        this.confirmationStore?.clear();
+        const reply = "Cancelled.";
+        await this.send(chatId, [reply]);
+        return [reply];
+      }
+      // Not a yes/no — block: show the pending confirmation and wait.
+      const modal = `Pending confirmation:\n${pending.description}\n\nReply yes to confirm or no to cancel.`;
+      await this.send(chatId, [modal]);
+      return [modal];
+    }
+
     const outbound: string[] = [];
 
     // Show a typing indicator and refresh every 4.5 s (Telegram expires it after 5 s).
@@ -419,9 +472,10 @@ export class TelegramBot {
     const typingInterval = setInterval(sendTyping, 4500);
 
     const unsubscribe = this.built.agent.subscribe((event) => {
-      if (event.type === "tool_execution_end" && event.toolName === "ask_user") {
-        const question = askUserText(event.result);
-        if (question) outbound.push(question);
+      if (event.type === "tool_execution_end" && isTerminating(event.result)) {
+        // Capture text from any tool that terminates the loop (ask_user, confirmation gates).
+        const t = extractToolText(event.result);
+        if (t) outbound.push(t);
       }
     });
     try {
@@ -498,9 +552,9 @@ export class TelegramBot {
           continue;
         }
 
-        // /cancel: abort the active turn (if any) and acknowledge — handled here
-        // in the poll loop so it can interrupt an in-flight turn without waiting
-        // for it to finish first.
+        // /cancel: abort the active turn (if any) and/or clear any pending
+        // confirmation — handled here in the poll loop so it can interrupt an
+        // in-flight turn without waiting for it to finish first.
         if (message.text.trim() === "/cancel") {
           const wasCancelled = this.activeTurn !== null;
           if (wasCancelled) {
@@ -508,8 +562,13 @@ export class TelegramBot {
             await this.activeTurn;
             this.activeTurn = null;
           }
-          const reply = wasCancelled ? "Cancelled." : "No active turn to cancel.";
-          this.log.withMetadata({ chatId: message.chatId, wasCancelled }).info("cancel command");
+          const hadConfirmation = this.confirmationStore?.hasPending() ?? false;
+          if (hadConfirmation) this.confirmationStore?.clear();
+          const reply =
+            wasCancelled || hadConfirmation ? "Cancelled." : "No active turn to cancel.";
+          this.log
+            .withMetadata({ chatId: message.chatId, wasCancelled, hadConfirmation })
+            .info("cancel command");
           await this.deps.client.sendMessage(message.chatId, reply).catch(() => {});
           continue;
         }

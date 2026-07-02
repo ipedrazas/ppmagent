@@ -1,6 +1,8 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, toolResult } from "../tool-helpers.ts";
+import { CONFIRM_SUFFIX, type ConfirmationStore } from "../tools/confirmation.ts";
+import { sanitizeLine, sanitizeString } from "../tools/sanitize.ts";
 import {
   type DataboxClient,
   type DataboxRow,
@@ -8,6 +10,11 @@ import {
   type ProjectMutationResult,
   taskRef,
 } from "./databox.ts";
+
+export interface TrackerToolsOptions {
+  /** When set, create/update operations require user confirmation before executing. */
+  confirmationStore?: ConfirmationStore;
+}
 
 /**
  * Neutral `tracker_*` tools. Linear/Jira vocabulary stays out of the tool names
@@ -21,7 +28,7 @@ import {
  * Entities: tasks (issues) and projects are read+write; teams are read-only
  * reference data (used to resolve the team for project creation).
  */
-export function buildTrackerTools(databox: DataboxClient): AgentTool[] {
+export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOptions): AgentTool[] {
   /** Coerce an unknown field to a display string ("" when absent/non-string). */
   const str = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
 
@@ -81,7 +88,32 @@ export function buildTrackerTools(databox: DataboxClient): AgentTool[] {
       priority: Type.Optional(Type.Integer({ minimum: 0, maximum: 4 })),
     }),
     execute: async (_id, params, signal) => {
-      const result = await databox.createTask(params, { signal });
+      const sanitized = {
+        ...params,
+        title: sanitizeLine(params.title),
+        description: sanitizeString(params.description),
+      };
+
+      if (opts?.confirmationStore) {
+        const preview = sanitized.description.slice(0, 120);
+        const lines = [
+          "Create task",
+          `  Title: "${sanitized.title}"`,
+          `  Description: ${preview}${sanitized.description.length > 120 ? "…" : ""}`,
+        ];
+        const description = lines.join("\n");
+        opts.confirmationStore.set(description, async (s) => {
+          const r = await databox.createTask(sanitized, { signal: s });
+          return renderIssueMutation(r);
+        });
+        return toolResult(
+          `${description}${CONFIRM_SUFFIX}`,
+          { identifier: "", issue_id: "", url: "" },
+          { terminate: true },
+        );
+      }
+
+      const result = await databox.createTask(sanitized, { signal });
       return toolResult(renderIssueMutation(result), result);
     },
   });
@@ -104,7 +136,35 @@ export function buildTrackerTools(databox: DataboxClient): AgentTool[] {
       priority: Type.Optional(Type.Integer({ minimum: 0, maximum: 4 })),
     }),
     execute: async (_id, params, signal) => {
-      const result = await databox.updateTask(params, { signal });
+      const sanitized = {
+        ...params,
+        ref: sanitizeLine(params.ref),
+        title: params.title !== undefined ? sanitizeLine(params.title) : undefined,
+        description:
+          params.description !== undefined ? sanitizeString(params.description) : undefined,
+        status: params.status !== undefined ? sanitizeLine(params.status) : undefined,
+      };
+
+      if (opts?.confirmationStore) {
+        const changes: string[] = [];
+        if (sanitized.title) changes.push(`  Title: "${sanitized.title}"`);
+        if (sanitized.status) changes.push(`  Status: ${sanitized.status}`);
+        if (sanitized.description) changes.push("  Description: (updated)");
+        if (sanitized.project_id) changes.push(`  Project: ${sanitized.project_id}`);
+        if (sanitized.assignee_id) changes.push(`  Assignee: ${sanitized.assignee_id}`);
+        const description = [`Update task ${sanitized.ref}`, ...changes].join("\n");
+        opts.confirmationStore.set(description, async (s) => {
+          const r = await databox.updateTask(sanitized, { signal: s });
+          return renderIssueMutation(r);
+        });
+        return toolResult(
+          `${description}${CONFIRM_SUFFIX}`,
+          { identifier: "", issue_id: "", url: "" },
+          { terminate: true },
+        );
+      }
+
+      const result = await databox.updateTask(sanitized, { signal });
       return toolResult(renderIssueMutation(result), result);
     },
   });
@@ -184,7 +244,35 @@ export function buildTrackerTools(databox: DataboxClient): AgentTool[] {
       state: Type.Optional(Type.String()),
     }),
     execute: async (_id, params, signal) => {
-      const result = await databox.createProject(params, { signal });
+      const sanitized = {
+        ...params,
+        name: sanitizeLine(params.name),
+        team: sanitizeLine(params.team),
+        description:
+          params.description !== undefined ? sanitizeString(params.description) : undefined,
+        state: params.state !== undefined ? sanitizeLine(params.state) : undefined,
+      };
+
+      if (opts?.confirmationStore) {
+        const lines = [
+          "Create project",
+          `  Name: "${sanitized.name}"`,
+          `  Team: ${sanitized.team}`,
+        ];
+        if (sanitized.state) lines.push(`  State: ${sanitized.state}`);
+        const description = lines.join("\n");
+        opts.confirmationStore.set(description, async (s) => {
+          const r = await databox.createProject(sanitized, { signal: s });
+          return renderProjectMutation(r);
+        });
+        return toolResult(
+          `${description}${CONFIRM_SUFFIX}`,
+          { name: "", project_id: "", url: "" },
+          { terminate: true },
+        );
+      }
+
+      const result = await databox.createProject(sanitized, { signal });
       return toolResult(renderProjectMutation(result), result);
     },
   });
@@ -202,7 +290,33 @@ export function buildTrackerTools(databox: DataboxClient): AgentTool[] {
       state: Type.Optional(Type.String()),
     }),
     execute: async (_id, params, signal) => {
-      const result = await databox.updateProject(params, { signal });
+      const sanitized = {
+        ...params,
+        id: sanitizeLine(params.id),
+        name: params.name !== undefined ? sanitizeLine(params.name) : undefined,
+        description:
+          params.description !== undefined ? sanitizeString(params.description) : undefined,
+        state: params.state !== undefined ? sanitizeLine(params.state) : undefined,
+      };
+
+      if (opts?.confirmationStore) {
+        const changes: string[] = [];
+        if (sanitized.name) changes.push(`  Name: "${sanitized.name}"`);
+        if (sanitized.state) changes.push(`  State: ${sanitized.state}`);
+        if (sanitized.description) changes.push("  Description: (updated)");
+        const description = [`Update project ${sanitized.id}`, ...changes].join("\n");
+        opts.confirmationStore.set(description, async (s) => {
+          const r = await databox.updateProject(sanitized, { signal: s });
+          return renderProjectMutation(r);
+        });
+        return toolResult(
+          `${description}${CONFIRM_SUFFIX}`,
+          { name: "", project_id: "", url: "" },
+          { terminate: true },
+        );
+      }
+
+      const result = await databox.updateProject(sanitized, { signal });
       return toolResult(renderProjectMutation(result), result);
     },
   });

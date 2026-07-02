@@ -9,6 +9,7 @@ import { buildMemoryTools } from "./memory/tools.ts";
 import { ProteosClient } from "./proteos/proteos.ts";
 import { buildProteosTools } from "./proteos/tools.ts";
 import { buildAskUserTool } from "./tools/ask-user.ts";
+import type { ConfirmationStore } from "./tools/confirmation.ts";
 import { type TraceRecorder, clipPayload } from "./trace/recorder.ts";
 import { DataboxClient } from "./tracker/databox.ts";
 import { buildTrackerTools } from "./tracker/tools.ts";
@@ -66,6 +67,8 @@ export interface BuildAgentOverrides {
   recorder?: TraceRecorder;
   /** Called after `proteos_task_run` dispatches a task (for background monitoring). */
   onTaskDispatched?: (machine: string, taskId: string, project: string, label: string) => void;
+  /** When set, push/PR and tracker mutations require confirmation before executing. */
+  confirmationStore?: ConfirmationStore;
 }
 
 /**
@@ -130,8 +133,11 @@ export function buildAgent(
 
   const tools = [
     ...buildMemoryTools(ppm),
-    ...buildTrackerTools(databox),
-    ...buildProteosTools(proteos, { onTaskDispatched: overrides.onTaskDispatched }),
+    ...buildTrackerTools(databox, { confirmationStore: overrides.confirmationStore }),
+    ...buildProteosTools(proteos, {
+      onTaskDispatched: overrides.onTaskDispatched,
+      confirmationStore: overrides.confirmationStore,
+    }),
     buildAskUserTool(ppm),
   ];
 
