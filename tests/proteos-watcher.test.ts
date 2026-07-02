@@ -3,8 +3,8 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProteosClient } from "../src/proteos/proteos.ts";
-import { extractTaskId, parseTaskStatus, ProteosTaskWatcher } from "../src/proteos/watcher.ts";
 import { WatchedTasksStore } from "../src/proteos/watched-store.ts";
+import { ProteosTaskWatcher, extractTaskId, parseTaskStatus } from "../src/proteos/watcher.ts";
 
 describe("extractTaskId", () => {
   test("extracts a numeric task id", () => {
@@ -122,7 +122,9 @@ describe("ProteosTaskWatcher", () => {
     const notifications: string[] = [];
     const watcher = new ProteosTaskWatcher({
       proteos,
-      notify: async (msg) => { notifications.push(msg); },
+      notify: async (msg) => {
+        notifications.push(msg);
+      },
       storeFile,
       intervalMs: 60_000, // long — we drive polls manually
     });
@@ -153,7 +155,9 @@ describe("ProteosTaskWatcher", () => {
     const notifications: string[] = [];
     const watcher = new ProteosTaskWatcher({
       proteos,
-      notify: async (msg) => { notifications.push(msg); },
+      notify: async (msg) => {
+        notifications.push(msg);
+      },
       storeFile,
       intervalMs: 60_000,
     });
@@ -177,7 +181,9 @@ describe("ProteosTaskWatcher", () => {
     const notifications: string[] = [];
     const watcher = new ProteosTaskWatcher({
       proteos,
-      notify: async (msg) => { notifications.push(msg); },
+      notify: async (msg) => {
+        notifications.push(msg);
+      },
       storeFile,
       intervalMs: 60_000,
     });

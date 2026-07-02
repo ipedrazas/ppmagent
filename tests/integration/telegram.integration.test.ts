@@ -46,15 +46,23 @@ function testConfig(root: string): Config {
 }
 
 /** A fake Telegram client that records what the bot sends. */
-function fakeClient(): { client: TelegramClient; sent: Array<{ chatId: number; text: string }> } {
+function fakeClient(): {
+  client: TelegramClient;
+  sent: Array<{ chatId: number; text: string }>;
+  chatActions: Array<{ chatId: number; action: string }>;
+} {
   const sent: Array<{ chatId: number; text: string }> = [];
+  const chatActions: Array<{ chatId: number; action: string }> = [];
   const client = {
     getUpdates: async () => [],
     sendMessage: async (chatId: number, text: string) => {
       sent.push({ chatId, text });
     },
+    sendChatAction: async (chatId: number, action: string) => {
+      chatActions.push({ chatId, action });
+    },
   } as unknown as TelegramClient;
-  return { client, sent };
+  return { client, sent, chatActions };
 }
 
 describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
@@ -86,10 +94,10 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
       model: faux.getModel(),
       streamFn: fauxStream,
     });
-    const { client, sent } = fakeClient();
+    const { client, sent, chatActions } = fakeClient();
     const bot = new TelegramBot(config, built, { client, store });
     holder.bot = bot;
-    return { bot, sent };
+    return { bot, sent, chatActions };
   }
 
   test("/project sets the active project for memory injection", async () => {
@@ -219,6 +227,32 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
     expect(ctx.data.openQuestions.map((q) => q.body)).toContain(
       "What metric defines onboarding success?",
     );
+  });
+
+  test("/help lists all slash commands", async () => {
+    const store = new SessionStore(join(root, "session.json"));
+    const { bot, sent } = makeBot(store);
+    const replies = await bot.handleMessage(CHAT, "/help");
+    expect(replies[0]).toContain("/project");
+    expect(replies[0]).toContain("/cancel");
+    expect(replies[0]).toContain("/help");
+    expect(sent.at(-1)?.text).toContain("Available commands:");
+  });
+
+  test("/cancel with no active turn reports nothing to cancel", async () => {
+    const store = new SessionStore(join(root, "session.json"));
+    const { bot, sent } = makeBot(store);
+    const replies = await bot.handleMessage(CHAT, "/cancel");
+    expect(replies[0]).toContain("No active turn to cancel");
+    expect(sent.at(-1)?.text).toContain("No active turn to cancel");
+  });
+
+  test("agent turns send a typing indicator while processing", async () => {
+    faux.setResponses([fauxAssistantMessage("Done.")]);
+    const store = new SessionStore(join(root, "session.json"));
+    const { bot, chatActions } = makeBot(store);
+    await bot.handleMessage(CHAT, "do something");
+    expect(chatActions.some((a) => a.action === "typing")).toBe(true);
   });
 
   test("a fresh bot restores the active project + transcript from disk", async () => {
