@@ -36,6 +36,8 @@ function mockStore(): SessionStore {
     save: () => {},
     list: () => [],
     find: () => undefined,
+    loadOffset: () => 0,
+    saveOffset: () => {},
   } as unknown as SessionStore;
 }
 
