@@ -62,16 +62,19 @@ export class TelegramClient {
     });
   }
 
-  async sendMessage(chatId: number, text: string): Promise<void> {
+  async sendMessage(chatId: number, text: string, parseMode?: "MarkdownV2"): Promise<void> {
+    const payload: Record<string, unknown> = { chat_id: chatId, text };
+    if (parseMode) payload.parse_mode = parseMode;
     const res = await this.fetchImpl(`${this.base}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       this.log
-        .withMetadata({ chatId, status: res.status })
+        .withMetadata({ chatId, status: res.status, parseMode })
         .warn("sendMessage returned a non-2xx status");
+      throw new Error(`sendMessage failed with status ${res.status}`);
     }
   }
 }

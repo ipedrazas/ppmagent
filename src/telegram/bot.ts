@@ -14,6 +14,7 @@ import { type Logger, nullLogger } from "../logger.ts";
 import { type SessionState, type SessionStore, newSession, shortId } from "../session/store.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
 import type { TelegramClient } from "./client.ts";
+import { toMarkdownV2 } from "./mdv2.ts";
 
 /** One-line label for a session in listings: `<short> "name" — N msgs, project`. */
 function sessionLabel(s: {
@@ -248,7 +249,17 @@ export class TelegramBot {
   }
 
   private async send(chatId: number, messages: string[]): Promise<void> {
-    for (const text of messages) await this.deps.client.sendMessage(chatId, text);
+    for (const text of messages) {
+      const formatted = toMarkdownV2(text);
+      try {
+        await this.deps.client.sendMessage(chatId, formatted, "MarkdownV2");
+      } catch {
+        // MarkdownV2 was rejected by Telegram (e.g. malformed entity) — retry
+        // as plain text so the message is never silently dropped.
+        this.log.withMetadata({ chatId }).warn("MarkdownV2 send failed; retrying as plain text");
+        await this.deps.client.sendMessage(chatId, text);
+      }
+    }
   }
 
   /**
