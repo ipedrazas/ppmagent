@@ -41,6 +41,9 @@ function testConfig(root: string): Config {
     compactionTokenThreshold: 0,
     logLevel: "info",
     logFormat: "json",
+    githubWebhookPort: null,
+    githubWebhookSecret: "",
+    githubMonitoredRepos: [],
   };
 }
 

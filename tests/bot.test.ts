@@ -24,6 +24,9 @@ function minimalConfig(): Config {
     compactionTokenThreshold: 0,
     logLevel: "info",
     logFormat: "json",
+    githubWebhookPort: null,
+    githubWebhookSecret: "",
+    githubMonitoredRepos: [],
   };
 }
 
