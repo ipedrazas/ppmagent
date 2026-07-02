@@ -30,8 +30,7 @@ function convertProse(text: string): string {
   const parts: string[] = [];
   const inlineRe = /`([^`]+)`/g;
   let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = inlineRe.exec(text)) !== null) {
+  for (let m = inlineRe.exec(text); m !== null; m = inlineRe.exec(text)) {
     if (m.index > last) parts.push(escapeText(text.slice(last, m.index)));
     parts.push(`\`${escapeCode(m[1] ?? "")}\``);
     last = m.index + m[0].length;
@@ -52,8 +51,7 @@ export function toMarkdownV2(text: string): string {
   const parts: string[] = [];
   const fenceRe = /```([\w]*)\n?([\s\S]*?)```/g;
   let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = fenceRe.exec(text)) !== null) {
+  for (let m = fenceRe.exec(text); m !== null; m = fenceRe.exec(text)) {
     if (m.index > last) parts.push(convertProse(text.slice(last, m.index)));
     const lang = m[1] ?? "";
     const code = m[2] ?? "";
