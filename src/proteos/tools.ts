@@ -2,6 +2,12 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, toolResult } from "../tool-helpers.ts";
 import type { ProteosClient } from "./proteos.ts";
+import { extractTaskId } from "./watcher.ts";
+
+export interface ProteosToolsOptions {
+  /** Called after a task is dispatched so the background watcher can track it. */
+  onTaskDispatched?: (machine: string, taskId: string, project: string, label: string) => void;
+}
 
 /**
  * `proteos_*` tools: delegate coding work to ProteOS, where a headless agent runs
@@ -17,7 +23,7 @@ import type { ProteosClient } from "./proteos.ts";
  * `task watch` (live event stream) is intentionally not exposed: it blocks for up
  * to 30m, which would freeze the chat. Use proteos_task_get to poll instead.
  */
-export function buildProteosTools(proteos: ProteosClient): AgentTool[] {
+export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOptions): AgentTool[] {
   // ── Discovery ──
 
   const listMachines = defineTool({
@@ -129,6 +135,17 @@ export function buildProteosTools(proteos: ProteosClient): AgentTool[] {
     }),
     execute: async (_id, params, signal) => {
       const out = await proteos.taskRun(params, signal);
+      if (opts?.onTaskDispatched) {
+        const taskId = extractTaskId(out);
+        if (taskId) {
+          opts.onTaskDispatched(
+            params.machine,
+            taskId,
+            params.project,
+            params.prompt.slice(0, 200),
+          );
+        }
+      }
       return toolResult(out, { output: out });
     },
   });

@@ -3,6 +3,7 @@ import { buildAgent } from "./agent.ts";
 import { type Summarizer, makeModelSummarizer, placeholderSummarizer } from "./compaction.ts";
 import { loadConfig } from "./config.ts";
 import { type Logger, createLogger } from "./logger.ts";
+import { ProteosTaskWatcher } from "./proteos/watcher.ts";
 import { SessionStore } from "./session/store.ts";
 import { TelegramBot } from "./telegram/bot.ts";
 import { TelegramClient } from "./telegram/client.ts";
@@ -44,11 +45,35 @@ async function main(): Promise<void> {
   // `bun run trace` (src/trace/extract.ts).
   const recorder = new TraceRecorder(join(dirname(config.sessionFile), "traces"), logger);
 
+  // The watcher holder breaks the init cycle: buildAgent needs onTaskDispatched,
+  // but ProteosTaskWatcher needs built.proteos. The holder is set before any turn
+  // runs, so the callback is always populated by the time it fires.
+  const watcherHolder: { watcher?: ProteosTaskWatcher } = {};
   const holder: { bot?: TelegramBot } = {};
-  const built = buildAgent(config, () => holder.bot?.getActiveProject(), { logger, recorder });
+  const built = buildAgent(config, () => holder.bot?.getActiveProject(), {
+    logger,
+    recorder,
+    onTaskDispatched: (machine, taskId, project, label) =>
+      watcherHolder.watcher?.watch(machine, taskId, project, label),
+  });
+
+  const telegramClient = new TelegramClient(config.telegramBotToken, fetch, logger);
+
+  const watcher = new ProteosTaskWatcher({
+    proteos: built.proteos,
+    notify: async (msg) => {
+      if (config.telegramAllowedChatId !== undefined) {
+        await telegramClient.sendMessage(config.telegramAllowedChatId, msg);
+      }
+    },
+    storeFile: join(dirname(config.sessionFile), "proteos-tasks.json"),
+    intervalMs: config.proteosWatchIntervalMs,
+    logger,
+  });
+  watcherHolder.watcher = watcher;
 
   const bot = new TelegramBot(config, built, {
-    client: new TelegramClient(config.telegramBotToken, fetch, logger),
+    client: telegramClient,
     store: new SessionStore(config.sessionFile),
     summarize: makeResilientSummarizer(makeModelSummarizer(built.model), logger),
     recorder,
@@ -59,19 +84,20 @@ async function main(): Promise<void> {
   // Graceful shutdown. The container runs `bun` as PID 1, for which the kernel
   // installs no default signal disposition — so an unhandled SIGTERM is ignored
   // and Docker escalates to SIGKILL (exit 137). Handle the termination signals
-  // explicitly: stop the bot (which aborts the in-flight long-poll), let
-  // `start()` return, and exit 0.
+  // explicitly: stop the bot and watcher (which abort their in-flight polls),
+  // let both `start()` calls return, and exit 0.
   let shuttingDown = false;
   const shutdown = (signal: NodeJS.Signals): void => {
     if (shuttingDown) return; // ignore a second signal while we're already winding down
     shuttingDown = true;
     logger.withMetadata({ signal }).info("received termination signal; shutting down");
     bot.stop();
+    watcher.stop();
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 
-  await bot.start();
+  await Promise.all([bot.start(), watcher.start()]);
   logger.info("ppmagent stopped");
 }
 
