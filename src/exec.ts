@@ -49,10 +49,15 @@ export function execCommand(
       log.withError(error).withMetadata({ args }).error("subprocess failed to spawn");
       reject(error);
     });
-    child.on("close", (code) => {
-      const exitCode = code ?? 0;
+    child.on("close", (code, signal) => {
+      const exitCode = code ?? (signal !== null ? 1 : 0);
       log
-        .withMetadata({ args, exitCode, durationMs: Math.round(performance.now() - startedAt) })
+        .withMetadata({
+          args,
+          exitCode,
+          signal: signal ?? undefined,
+          durationMs: Math.round(performance.now() - startedAt),
+        })
         .debug("subprocess completed");
       resolve({ stdout, stderr, exitCode });
     });

@@ -446,6 +446,13 @@ export class TelegramBot {
           await this.handleMessage(message.chatId, message.text);
         } catch (error) {
           this.log.withError(error).withMetadata({ chatId: message.chatId }).error("turn dropped");
+          const msg =
+            error instanceof Error
+              ? `Something went wrong: ${error.message}`
+              : "Something went wrong.";
+          await this.send(message.chatId, [msg]).catch((sendErr) => {
+            this.log.withError(sendErr).error("failed to notify user of turn error");
+          });
         }
       }
     }
