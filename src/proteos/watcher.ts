@@ -128,6 +128,16 @@ export class ProteosTaskWatcher {
     this.abort.abort();
   }
 
+  /**
+   * Run exactly one poll round and return when it completes. Lets callers drive
+   * the watcher deterministically (used by tests) without racing the background
+   * loop's timers against an in-flight poll.
+   */
+  async pollOnce(): Promise<void> {
+    this.running = true;
+    await this.poll();
+  }
+
   private async poll(): Promise<void> {
     const tasks = this.store.list();
     if (tasks.length === 0) return;

@@ -3,8 +3,8 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProteosClient } from "../src/proteos/proteos.ts";
-import { extractTaskId, parseTaskStatus, ProteosTaskWatcher } from "../src/proteos/watcher.ts";
 import { WatchedTasksStore } from "../src/proteos/watched-store.ts";
+import { ProteosTaskWatcher, extractTaskId, parseTaskStatus } from "../src/proteos/watcher.ts";
 
 describe("extractTaskId", () => {
   test("extracts a numeric task id", () => {
@@ -122,7 +122,9 @@ describe("ProteosTaskWatcher", () => {
     const notifications: string[] = [];
     const watcher = new ProteosTaskWatcher({
       proteos,
-      notify: async (msg) => { notifications.push(msg); },
+      notify: async (msg) => {
+        notifications.push(msg);
+      },
       storeFile,
       intervalMs: 60_000, // long — we drive polls manually
     });
@@ -131,13 +133,8 @@ describe("ProteosTaskWatcher", () => {
     const store = new WatchedTasksStore(storeFile);
     expect(store.list()).toHaveLength(1);
 
-    // Expose poll() via start() with a very short interval and immediate stop after first round.
-    // Use the internal approach: stop after the immediate poll on start().
-    const done = watcher.start();
-    // start() polls once immediately before its first sleep; stop after a tick.
-    await new Promise((r) => setTimeout(r, 50));
-    watcher.stop();
-    await done;
+    // Drive a single poll deterministically — no timer race against the loop.
+    await watcher.pollOnce();
 
     expect(notifications).toHaveLength(1);
     expect(notifications[0]).toContain("t-done");
@@ -153,16 +150,15 @@ describe("ProteosTaskWatcher", () => {
     const notifications: string[] = [];
     const watcher = new ProteosTaskWatcher({
       proteos,
-      notify: async (msg) => { notifications.push(msg); },
+      notify: async (msg) => {
+        notifications.push(msg);
+      },
       storeFile,
       intervalMs: 60_000,
     });
 
     watcher.watch("m-1", "t-failed", "myrepo", "run tests");
-    const done = watcher.start();
-    await new Promise((r) => setTimeout(r, 50));
-    watcher.stop();
-    await done;
+    await watcher.pollOnce();
 
     expect(notifications).toHaveLength(1);
     expect(notifications[0]).toContain("t-failed");
@@ -177,16 +173,15 @@ describe("ProteosTaskWatcher", () => {
     const notifications: string[] = [];
     const watcher = new ProteosTaskWatcher({
       proteos,
-      notify: async (msg) => { notifications.push(msg); },
+      notify: async (msg) => {
+        notifications.push(msg);
+      },
       storeFile,
       intervalMs: 60_000,
     });
 
     watcher.watch("m-1", "t-running", "myrepo", "write feature");
-    const done = watcher.start();
-    await new Promise((r) => setTimeout(r, 50));
-    watcher.stop();
-    await done;
+    await watcher.pollOnce();
 
     expect(notifications).toHaveLength(0);
     const store = new WatchedTasksStore(storeFile);
@@ -244,10 +239,7 @@ describe("ProteosTaskWatcher", () => {
     });
 
     watcher.watch("m-1", "t-done", "myrepo", "prompt");
-    const done = watcher.start();
-    await new Promise((r) => setTimeout(r, 50));
-    watcher.stop();
-    await done;
+    await watcher.pollOnce();
 
     // Notification was attempted
     expect(callCount).toBe(1);
