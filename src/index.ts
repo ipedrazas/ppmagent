@@ -9,6 +9,7 @@ import { ProteosTaskWatcher } from "./proteos/watcher.ts";
 import { SessionStore } from "./session/store.ts";
 import { TelegramBot } from "./telegram/bot.ts";
 import { TelegramClient } from "./telegram/client.ts";
+import { ConfirmationStore } from "./tools/confirmation.ts";
 import { TraceRecorder } from "./trace/recorder.ts";
 
 /**
@@ -52,9 +53,11 @@ async function main(): Promise<void> {
   // runs, so the callback is always populated by the time it fires.
   const watcherHolder: { watcher?: ProteosTaskWatcher } = {};
   const holder: { bot?: TelegramBot } = {};
+  const confirmationStore = new ConfirmationStore();
   const built = buildAgent(config, () => holder.bot?.getActiveProject(), {
     logger,
     recorder,
+    confirmationStore,
     onTaskDispatched: (machine, taskId, project, label) =>
       watcherHolder.watcher?.watch(machine, taskId, project, label),
   });
@@ -101,6 +104,7 @@ async function main(): Promise<void> {
     summarize: makeResilientSummarizer(makeModelSummarizer(built.model), logger),
     recorder,
     logger,
+    confirmationStore,
   });
   holder.bot = bot;
 
