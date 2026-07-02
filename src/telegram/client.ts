@@ -118,7 +118,9 @@ export class TelegramClient {
       });
       if (res.status === 429) {
         if (attempt === MAX_RATE_LIMIT_RETRIES) {
-          this.log.withMetadata({ chatId }).warn("sendMessage rate limit retries exhausted, dropping chunk");
+          this.log
+            .withMetadata({ chatId })
+            .warn("sendMessage rate limit retries exhausted, dropping chunk");
           return;
         }
         const body = (await res.json()) as { parameters?: { retry_after?: number } };

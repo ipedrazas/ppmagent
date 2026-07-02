@@ -53,7 +53,7 @@ describe("TelegramClient.getUpdates", () => {
     expect(capturedInit?.signal).toBeDefined();
     // Aborting the controller should also abort the combined signal
     controller.abort();
-    expect(capturedInit!.signal!.aborted).toBe(true);
+    expect(capturedInit?.signal?.aborted).toBe(true);
   });
 });
 
@@ -127,10 +127,9 @@ describe("TelegramClient.sendMessage", () => {
     const fetchStub: FetchLike = async () => {
       callCount++;
       if (callCount === 1) {
-        return new Response(
-          JSON.stringify({ ok: false, parameters: { retry_after: 2 } }),
-          { status: 429 },
-        );
+        return new Response(JSON.stringify({ ok: false, parameters: { retry_after: 2 } }), {
+          status: 429,
+        });
       }
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     };
