@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { uuidv7 } from "@earendil-works/pi-agent-core";
@@ -59,12 +66,14 @@ export class SessionStore {
   private readonly root: string;
   private readonly dir: string;
   private readonly pointer: string;
+  private readonly offsetFile: string;
 
   constructor(filePath: string) {
     this.legacyFile = filePath;
     this.root = dirname(filePath);
     this.dir = join(this.root, "sessions");
     this.pointer = join(this.root, "current");
+    this.offsetFile = join(this.root, "offset");
   }
 
   private file(sessionId: string): string {
@@ -98,7 +107,9 @@ export class SessionStore {
 
   private setCurrent(sessionId: string): void {
     if (!existsSync(this.root)) mkdirSync(this.root, { recursive: true });
-    writeFileSync(this.pointer, sessionId);
+    const tmp = `${this.pointer}.tmp`;
+    writeFileSync(tmp, sessionId);
+    renameSync(tmp, this.pointer);
   }
 
   /** One-time import of a pre-multi-session file as the first real session. */
@@ -123,12 +134,33 @@ export class SessionStore {
   /**
    * Persist `state` and mark it current. Refreshes `updatedAt` (mutating the
    * passed object, which the caller holds as the live session).
+   * Writes are atomic: content goes to a sibling `.tmp` file first, then
+   * renamed into place, so a crash mid-write never leaves a partial file.
    */
   save(state: SessionState): void {
     if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true });
     state.updatedAt = Date.now();
-    writeFileSync(this.file(state.sessionId), JSON.stringify(state, null, 2));
+    const file = this.file(state.sessionId);
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, JSON.stringify(state, null, 2));
+    renameSync(tmp, file);
     this.setCurrent(state.sessionId);
+  }
+
+  /** Load the last-seen Telegram update offset, or 0 if not yet persisted. */
+  loadOffset(): number {
+    const raw = readFileSafe(this.offsetFile);
+    if (raw == null) return 0;
+    const n = Number.parseInt(raw.trim(), 10);
+    return Number.isNaN(n) ? 0 : n;
+  }
+
+  /** Atomically persist the Telegram update offset. */
+  saveOffset(offset: number): void {
+    if (!existsSync(this.root)) mkdirSync(this.root, { recursive: true });
+    const tmp = `${this.offsetFile}.tmp`;
+    writeFileSync(tmp, String(offset));
+    renameSync(tmp, this.offsetFile);
   }
 
   /** All saved sessions, most-recently-updated first. */

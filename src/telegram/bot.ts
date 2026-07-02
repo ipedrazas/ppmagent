@@ -522,7 +522,7 @@ export class TelegramBot {
     this.log
       .withMetadata({ allowedChatId: this.allowedChatId, activeProject: this.state.activeProject })
       .info("bot started; long-polling for updates");
-    let offset = 0;
+    let offset = this.deps.store.loadOffset();
     let backoffMs = 0;
     while (this.running) {
       let updates: Awaited<ReturnType<TelegramClient["getUpdates"]>>;
@@ -545,6 +545,7 @@ export class TelegramBot {
       }
       for (const update of updates) {
         offset = update.updateId + 1;
+        this.deps.store.saveOffset(offset);
         const message = update.message;
         if (!message) continue;
         if (this.allowedChatId !== undefined && message.chatId !== this.allowedChatId) {
@@ -581,7 +582,8 @@ export class TelegramBot {
         }
 
         // Launch the turn as a background task so the poll loop remains
-        // responsive (e.g. to /cancel) while the agent is processing.
+        // responsive (e.g. to /cancel) while the agent is processing. A single
+        // failed turn is logged and surfaced to the user, never fatal to the loop.
         const turn: Promise<void> = this.handleMessage(message.chatId, message.text).then(
           () => {},
           (error) => {
@@ -589,6 +591,13 @@ export class TelegramBot {
               .withError(error)
               .withMetadata({ chatId: message.chatId })
               .error("turn dropped");
+            const msg =
+              error instanceof Error
+                ? `Something went wrong: ${error.message}`
+                : "Something went wrong.";
+            void this.send(message.chatId, [msg]).catch((sendErr) => {
+              this.log.withError(sendErr).error("failed to notify user of turn error");
+            });
           },
         );
         this.activeTurn = turn;
