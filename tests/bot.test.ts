@@ -17,6 +17,7 @@ function minimalConfig(): Config {
     dbxcliConfig: "",
     proteosBin: "proteos",
     proteosUrl: "",
+    proteosWatchIntervalMs: 30_000,
     telegramBotToken: "test",
     telegramAllowedChatId: undefined,
     sessionFile: "/tmp/session.json",
@@ -55,6 +56,7 @@ describe("TelegramBot.start — failed turn notification", () => {
       sendMessage: async (chatId: number, text: string) => {
         sent.push({ chatId, text });
       },
+      sendChatAction: async () => {},
     } as unknown as TelegramClient;
 
     const built = {
@@ -97,6 +99,7 @@ describe("TelegramBot.start — failed turn notification", () => {
       sendMessage: async (chatId: number, text: string) => {
         sent.push({ chatId, text });
       },
+      sendChatAction: async () => {},
     } as unknown as TelegramClient;
 
     const built = {
