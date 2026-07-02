@@ -20,6 +20,32 @@ export type LogFormat = "json" | "pretty";
 export const LOG_LEVELS: readonly LogLevel[] = ["trace", "debug", "info", "warn", "error", "fatal"];
 export const LOG_FORMATS: readonly LogFormat[] = ["json", "pretty"];
 
+/**
+ * Turn an Error into a plain, JSON-serializable object. Without this, `err`
+ * fields stringify to `{}` because `message`/`stack` are non-enumerable on
+ * Error — so `withError(e)` produced `"err":{}` and hid the actual failure.
+ * Walks the `cause` chain so wrapped errors keep their root cause, and folds
+ * in any extra enumerable properties (e.g. Node's `code`/`errno`/`syscall`).
+ */
+function serializeError(error: unknown): Record<string, unknown> {
+  if (!(error instanceof Error)) {
+    return { value: error };
+  }
+  const serialized: Record<string, unknown> = {
+    name: error.name,
+    message: error.message,
+    stack: error.stack,
+  };
+  // Copy own enumerable props Error hides from the standard three (e.g. code).
+  for (const key of Object.keys(error)) {
+    if (!(key in serialized)) serialized[key] = (error as unknown as Record<string, unknown>)[key];
+  }
+  if (error.cause !== undefined) {
+    serialized.cause = serializeError(error.cause);
+  }
+  return serialized;
+}
+
 export interface LoggerOptions {
   level: LogLevel;
   format: LogFormat;
@@ -34,6 +60,7 @@ export interface LoggerOptions {
 export function createLogger(opts: LoggerOptions): Logger {
   const json = opts.format === "json";
   return new LogLayer({
+    errorSerializer: serializeError,
     transport: new ConsoleTransport({
       logger: console,
       level: opts.level,
