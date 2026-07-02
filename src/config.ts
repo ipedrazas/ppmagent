@@ -86,6 +86,19 @@ export interface Config {
   logLevel: LogLevel;
   /** Log output shape: `json` (one object/line) or `pretty` (readable console). */
   logFormat: LogFormat;
+
+  /**
+   * HTTP port for the GitHub webhook server. `null` = disabled (default).
+   * Set `PPMA_GITHUB_WEBHOOK_PORT` to enable.
+   */
+  githubWebhookPort: number | null;
+  /** HMAC-SHA256 secret for verifying GitHub webhook payloads. Empty = no verification. */
+  githubWebhookSecret: string;
+  /**
+   * Repo patterns to monitor for PR events (e.g. `["tavon-ai/*", "ipedrazas/*"]`).
+   * Supports `owner/*` wildcards. Empty list = monitor nothing.
+   */
+  githubMonitoredRepos: string[];
 }
 
 /** Environment shape we read from — a subset of `process.env`. */
@@ -161,6 +174,25 @@ function resolveAllowedChatId(env: Env): number | undefined {
   return parsed;
 }
 
+function resolveWebhookPort(env: Env): number | null {
+  const raw = env.PPMA_GITHUB_WEBHOOK_PORT;
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isNaN(parsed) || parsed < 1 || parsed > 65535) {
+    throw new ConfigError(`PPMA_GITHUB_WEBHOOK_PORT must be a valid port (1–65535), got: ${raw}`);
+  }
+  return parsed;
+}
+
+function resolveMonitoredRepos(env: Env): string[] {
+  const raw = env.PPMA_GITHUB_MONITORED_REPOS;
+  if (!raw || raw.trim() === "") return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 /**
  * Build a {@link Config} from a process environment. Throws {@link ConfigError}
  * if a required variable is missing or malformed.
@@ -191,5 +223,9 @@ export function loadConfig(env: Env = process.env): Config {
 
     logLevel: oneOf(env, "PPMA_LOG_LEVEL", LOG_LEVELS, "info"),
     logFormat: oneOf(env, "PPMA_LOG_FORMAT", LOG_FORMATS, "json"),
+
+    githubWebhookPort: resolveWebhookPort(env),
+    githubWebhookSecret: optional(env, "PPMA_GITHUB_WEBHOOK_SECRET", ""),
+    githubMonitoredRepos: resolveMonitoredRepos(env),
   };
 }
