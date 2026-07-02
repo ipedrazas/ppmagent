@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionStore, newSession, shortId } from "../src/session/store.ts";
 
@@ -67,6 +67,65 @@ describe("SessionStore", () => {
     store.save(newSession()); // create the sessions/ dir + pointer
     writeFileSync(join(dir, "bad", "current"), "does-not-exist");
     expect(store.load()).toBeNull();
+  });
+});
+
+describe("SessionStore — offset persistence", () => {
+  test("loadOffset returns 0 when no offset file exists", () => {
+    expect(freshStore("offset-empty").loadOffset()).toBe(0);
+  });
+
+  test("saveOffset persists and loadOffset restores", () => {
+    const store = freshStore("offset-roundtrip");
+    store.saveOffset(42);
+    expect(store.loadOffset()).toBe(42);
+  });
+
+  test("saveOffset overwrites the previous value", () => {
+    const store = freshStore("offset-overwrite");
+    store.saveOffset(10);
+    store.saveOffset(99);
+    expect(store.loadOffset()).toBe(99);
+  });
+});
+
+describe("SessionStore — atomic writes", () => {
+  test("save leaves no .tmp files behind", () => {
+    const label = "atomic-save";
+    const store = freshStore(label);
+    store.save(newSession("check-atomic"));
+    const storeDir = join(dir, label);
+    const allFiles = readdirSync(storeDir, { recursive: true }) as string[];
+    const tmpFiles = allFiles.filter((f) => String(f).endsWith(".tmp"));
+    expect(tmpFiles).toEqual([]);
+  });
+
+  test("saveOffset leaves no .tmp files behind", () => {
+    const label = "atomic-offset";
+    const store = freshStore(label);
+    store.saveOffset(7);
+    const allFiles = readdirSync(join(dir, label)) as string[];
+    const tmpFiles = allFiles.filter((f) => String(f).endsWith(".tmp"));
+    expect(tmpFiles).toEqual([]);
+  });
+
+  test("saved session file is valid JSON after save", () => {
+    const store = freshStore("atomic-json");
+    const s = newSession("valid-json");
+    store.save(s);
+    const loaded = store.load();
+    expect(loaded?.sessionId).toBe(s.sessionId);
+    expect(loaded?.name).toBe("valid-json");
+  });
+
+  test("current pointer file is present and readable after save", () => {
+    const label = "atomic-pointer";
+    const store = freshStore(label);
+    const s = newSession("ptr-test");
+    store.save(s);
+    const pointerPath = join(dir, label, "current");
+    expect(existsSync(pointerPath)).toBe(true);
+    expect(store.load()?.sessionId).toBe(s.sessionId);
   });
 });
 
