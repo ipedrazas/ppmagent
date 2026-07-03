@@ -122,3 +122,51 @@ describe("TelegramBot.start — failed turn notification", () => {
     expect(thrownError?.stack).toContain("    at ");
   });
 });
+
+describe("TelegramBot.start — non-text message handling", () => {
+  test("sends a helpful reply for photo messages instead of silently ignoring them", async () => {
+    const sent: Array<{ chatId: number; text: string }> = [];
+    let callCount = 0;
+    const ctx: { stop: () => void } = { stop: () => {} };
+
+    const client = {
+      getUpdates: async () => {
+        callCount++;
+        if (callCount === 1) {
+          return [{ updateId: 1, message: { chatId: 42, nonText: "photo" } }];
+        }
+        ctx.stop();
+        return [];
+      },
+      sendMessage: async (chatId: number, text: string) => {
+        sent.push({ chatId, text });
+      },
+      sendChatAction: async () => {},
+    } as unknown as TelegramClient;
+
+    const built = {
+      agent: {
+        state: { messages: [] },
+        subscribe: () => () => {},
+        prompt: async () => {},
+      },
+      ppm: {},
+      databox: {},
+      proteos: {},
+      memoryContext: { hook: async (m: unknown[]) => m, sliceTokens: () => 0 },
+    } as unknown as BuiltAgent;
+
+    const config = makeTestConfig();
+    const store = mockStore();
+    const session = new ChatSession(config, { store });
+    session.attach(built);
+    const bot = new TelegramBot(config, built, session, { client, store });
+    ctx.stop = () => bot.stop();
+
+    await bot.start();
+
+    const reply = sent.find((m) => m.chatId === 42 && m.text.includes("photo"));
+    expect(reply).toBeDefined();
+    expect(reply?.text).toContain("text messages");
+  });
+});

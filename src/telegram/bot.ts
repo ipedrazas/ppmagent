@@ -8,7 +8,7 @@ import type { ConfirmationStore } from "../tools/confirmation.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
 import type { ChatSession } from "./chat-session.ts";
 import type { InboundMessage, TelegramClient } from "./client.ts";
-import { CommandRouter } from "./command-router.ts";
+import { CommandRouter, parseCommand } from "./command-router.ts";
 import { sendReplies } from "./reply.ts";
 import { TurnRunner } from "./turn-runner.ts";
 
@@ -161,7 +161,15 @@ export class TelegramBot {
       return;
     }
 
-    if (message.text.trim() === "/cancel") {
+    // Non-text messages (photos, voice notes, edits): send a helpful reply.
+    if (!message.text) {
+      const kind = message.nonText ?? "unknown";
+      await this.send(message.chatId, [`I can only process text messages (received: ${kind}).`]);
+      return;
+    }
+
+    // Handle /cancel@botname form from group chats before waiting for any active turn.
+    if (parseCommand(message.text)?.cmd === "cancel") {
       await this.cancel(message.chatId);
       return;
     }

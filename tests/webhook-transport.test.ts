@@ -123,4 +123,58 @@ describe("handleWebhookRequest", () => {
     const res = await handleWebhookRequest(makeRequest(body), makeOpts([]));
     expect(res.status).toBe(200);
   });
+
+  test("sends a helpful reply for photo messages when sendMessage is provided", async () => {
+    const replied: Array<{ chatId: number; text: string }> = [];
+    const body = JSON.stringify({
+      update_id: 1,
+      message: { chat: { id: 7 }, photo: [{}] },
+    });
+    const res = await handleWebhookRequest(
+      makeRequest(body),
+      makeOpts([], {
+        sendMessage: async (chatId, text) => {
+          replied.push({ chatId, text });
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    await Bun.sleep(5);
+    expect(replied).toHaveLength(1);
+    expect(replied[0]?.chatId).toBe(7);
+    expect(replied[0]?.text).toContain("photo");
+  });
+
+  test("sends a helpful reply for edited_message updates when sendMessage is provided", async () => {
+    const replied: Array<{ chatId: number; text: string }> = [];
+    const body = JSON.stringify({
+      update_id: 2,
+      edited_message: { chat: { id: 9 }, text: "edited text" },
+    });
+    const res = await handleWebhookRequest(
+      makeRequest(body),
+      makeOpts([], {
+        sendMessage: async (chatId, text) => {
+          replied.push({ chatId, text });
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    await Bun.sleep(5);
+    expect(replied).toHaveLength(1);
+    expect(replied[0]?.chatId).toBe(9);
+    expect(replied[0]?.text).toContain("edit");
+  });
+
+  test("does not call handleMessage for non-text messages", async () => {
+    const received: Array<{ chatId: number; text: string }> = [];
+    const body = JSON.stringify({
+      update_id: 3,
+      message: { chat: { id: 5 }, voice: {} },
+    });
+    const res = await handleWebhookRequest(makeRequest(body), makeOpts(received));
+    expect(res.status).toBe(200);
+    await Bun.sleep(5);
+    expect(received).toHaveLength(0);
+  });
 });

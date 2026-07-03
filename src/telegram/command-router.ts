@@ -15,6 +15,16 @@ import type { TraceRecorder } from "../trace/recorder.ts";
 import type { ChatSession } from "./chat-session.ts";
 import type { Send } from "./reply.ts";
 
+/**
+ * Parse a slash command, handling the `/cmd@botname arg` form used in group
+ * chats. Returns `{ cmd, arg }` or `null` when `text` is not a command.
+ */
+export function parseCommand(text: string): { cmd: string; arg: string } | null {
+  const m = text.trim().match(/^\/(\w+)(?:@\w+)?\s*(.*)$/);
+  if (!m) return null;
+  return { cmd: m[1] ?? "", arg: (m[2] ?? "").trim() };
+}
+
 /** Full list of available slash commands, one line each. */
 function helpText(): string {
   return [
@@ -57,34 +67,34 @@ export class CommandRouter {
   /**
    * Dispatch a slash command. Returns the replies sent, or `null` when `text`
    * is not a handled command (the caller runs it as an agent turn).
+   *
+   * Handles the group-chat form `/cmd@botname arg` via {@link parseCommand}.
    */
   async route(chatId: number, text: string): Promise<string[] | null> {
     const { session, confirmationStore, recorder } = this.deps;
-    const trimmed = text.trim();
 
-    // Trace every slash command uniformly (name + arg); turns are traced elsewhere.
-    if (trimmed.startsWith("/")) {
-      const [command = "", ...rest] = trimmed.split(/\s+/);
-      recorder?.record({ type: "command", command, arg: rest.join(" ") || undefined });
-    }
+    const parsed = parseCommand(text);
+    if (!parsed) return null;
 
-    if (trimmed.startsWith("/project")) {
-      const slug = trimmed.slice("/project".length).trim();
-      const reply = slug ? `Active project set to "${slug}".` : "Usage: /project <slug>";
-      if (slug) {
-        session.activeProject = slug;
+    const { cmd, arg } = parsed;
+    recorder?.record({ type: "command", command: `/${cmd}`, arg: arg || undefined });
+
+    if (cmd === "project") {
+      const reply = arg ? `Active project set to "${arg}".` : "Usage: /project <slug>";
+      if (arg) {
+        session.activeProject = arg;
         session.persist();
-        this.log.withMetadata({ chatId, project: slug }).info("active project switched");
+        this.log.withMetadata({ chatId, project: arg }).info("active project switched");
       }
       return this.reply(chatId, reply);
     }
 
-    if (trimmed === "/context") {
+    if (cmd === "context") {
       this.log.withMetadata({ chatId }).info("context reported");
       return this.reply(chatId, session.contextReport());
     }
 
-    if (trimmed === "/compact") {
+    if (cmd === "compact") {
       const before = contextTokens(session.messages);
       const beforeCount = session.messages.length;
       const outcome = await session.compact(1); // threshold 1 = always attempt
@@ -102,8 +112,8 @@ export class CommandRouter {
       return this.reply(chatId, reply);
     }
 
-    if (trimmed === "/new" || trimmed.startsWith("/new ")) {
-      const name = trimmed.slice("/new".length).trim() || undefined;
+    if (cmd === "new") {
+      const name = arg || undefined;
       const fresh = session.startNew(name);
       const reply =
         `Started a new session ${shortId(fresh.sessionId)}${name ? ` "${name}"` : ""}. ` +
@@ -112,37 +122,38 @@ export class CommandRouter {
       return this.reply(chatId, reply);
     }
 
-    if (trimmed.startsWith("/name")) {
-      const name = trimmed.slice("/name".length).trim();
-      const reply = name ? `Session named "${name}".` : "Usage: /name <name>";
-      if (name) {
-        session.name = name;
+    if (cmd === "name") {
+      const reply = arg ? `Session named "${arg}".` : "Usage: /name <name>";
+      if (arg) {
+        session.name = arg;
         session.persist();
-        this.log.withMetadata({ chatId, sessionId: session.sessionId, name }).info("session named");
+        this.log
+          .withMetadata({ chatId, sessionId: session.sessionId, name: arg })
+          .info("session named");
       }
       return this.reply(chatId, reply);
     }
 
-    if (trimmed === "/session") {
+    if (cmd === "session") {
       return this.reply(chatId, session.sessionReport());
     }
 
-    if (trimmed === "/tools") {
+    if (cmd === "tools") {
       this.log.withMetadata({ chatId }).info("tools reported");
       return this.reply(chatId, await this.toolsReport());
     }
 
-    if (trimmed === "/resume" || trimmed.startsWith("/resume ")) {
-      const reply = session.resume(trimmed.slice("/resume".length).trim());
+    if (cmd === "resume") {
+      const reply = session.resume(arg);
       this.log.withMetadata({ chatId, sessionId: session.sessionId }).info("resume command");
       return this.reply(chatId, reply);
     }
 
-    if (trimmed === "/search" || trimmed.startsWith("/search ")) {
-      return this.reply(chatId, this.searchSessions(trimmed.slice("/search".length).trim()));
+    if (cmd === "search") {
+      return this.reply(chatId, this.searchSessions(arg));
     }
 
-    if (trimmed === "/cancel") {
+    if (cmd === "cancel") {
       // When called from the poll loop while a turn is active, the poll loop
       // aborts the agent before routing here. This branch handles the direct
       // call case (no turn in flight) — we still clear any pending confirmation.
@@ -151,7 +162,7 @@ export class CommandRouter {
       return this.reply(chatId, hadConfirmation ? "Cancelled." : "No active turn to cancel.");
     }
 
-    if (trimmed === "/help") {
+    if (cmd === "help") {
       return this.reply(chatId, helpText());
     }
 
