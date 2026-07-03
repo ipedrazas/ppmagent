@@ -79,15 +79,15 @@ describe("MetricsCollector.recordToolCall", () => {
     c.recordToolCall("memory_list", false);
     c.recordToolCall("memory_list", true);
     const s = c.snapshot();
-    expect(s.tools["memory_list"]?.calls).toBe(3);
-    expect(s.tools["memory_list"]?.errors).toBe(1);
+    expect(s.tools.memory_list?.calls).toBe(3);
+    expect(s.tools.memory_list?.errors).toBe(1);
   });
 
   test("computes error rate correctly", () => {
     const c = new MetricsCollector();
     c.recordToolCall("tracker_create_task", true);
     c.recordToolCall("tracker_create_task", false);
-    expect(c.snapshot().tools["tracker_create_task"]?.errorRate).toBe(0.5);
+    expect(c.snapshot().tools.tracker_create_task?.errorRate).toBe(0.5);
   });
 
   test("tracks multiple tools independently", () => {
@@ -95,14 +95,14 @@ describe("MetricsCollector.recordToolCall", () => {
     c.recordToolCall("tool_a", false);
     c.recordToolCall("tool_b", true);
     const s = c.snapshot();
-    expect(s.tools["tool_a"]?.calls).toBe(1);
-    expect(s.tools["tool_b"]?.errors).toBe(1);
+    expect(s.tools.tool_a?.calls).toBe(1);
+    expect(s.tools.tool_b?.errors).toBe(1);
   });
 
   test("error rate is 0 when no errors", () => {
     const c = new MetricsCollector();
     c.recordToolCall("memory_read", false);
-    expect(c.snapshot().tools["memory_read"]?.errorRate).toBe(0);
+    expect(c.snapshot().tools.memory_read?.errorRate).toBe(0);
   });
 });
 

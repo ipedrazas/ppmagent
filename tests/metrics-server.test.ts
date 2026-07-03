@@ -24,7 +24,10 @@ describe("handleMetricsRequest", () => {
     const collector = new MetricsCollector();
     collector.recordTurn({ durationMs: 100, tokensBefore: 0, tokensAfter: 500 });
     const res = handleMetricsRequest(makeRequest("/metrics"), collector);
-    const body = (await res.json()) as { turns: { total: number }; tokens: { estimatedTotal: number } };
+    const body = (await res.json()) as {
+      turns: { total: number };
+      tokens: { estimatedTotal: number };
+    };
     expect(body.turns.total).toBe(1);
     expect(body.tokens.estimatedTotal).toBe(500);
   });
