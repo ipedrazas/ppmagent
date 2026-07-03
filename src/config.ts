@@ -114,6 +114,27 @@ export interface Config {
    * Set `PPMA_METRICS_PORT` to expose a live JSON metrics snapshot.
    */
   metricsPort: number | null;
+
+  /**
+   * Maximum combined stdout+stderr bytes a subprocess may emit before its output
+   * is truncated. 0 = unlimited.
+   */
+  execMaxOutputBytes: number;
+  /**
+   * Maximum tool calls per agent turn. The turn is aborted when this count is
+   * exceeded. 0 = unlimited.
+   */
+  turnMaxTools: number;
+  /**
+   * Maximum estimated cost (USD) per agent turn. The turn is aborted if the
+   * estimated cost of one turn exceeds this threshold. 0 = unlimited.
+   */
+  turnMaxCostUsd: number;
+  /**
+   * Maximum estimated cost (USD) per session. A new turn is refused when the
+   * accumulated session cost would breach this limit. 0 = unlimited.
+   */
+  sessionMaxCostUsd: number;
 }
 
 /** Environment shape we read from — a subset of `process.env`. */
@@ -140,6 +161,16 @@ function int(env: Env, key: string, fallback: number): number {
   const parsed = Number.parseInt(raw, 10);
   if (Number.isNaN(parsed)) {
     throw new ConfigError(`Environment variable ${key} must be an integer, got: ${raw}`);
+  }
+  return parsed;
+}
+
+function float(env: Env, key: string, fallback: number): number {
+  const raw = env[key];
+  if (!raw) return fallback;
+  const parsed = Number.parseFloat(raw);
+  if (Number.isNaN(parsed)) {
+    throw new ConfigError(`Environment variable ${key} must be a number, got: ${raw}`);
   }
   return parsed;
 }
@@ -244,5 +275,10 @@ export function loadConfig(env: Env = process.env): Config {
     githubWebhookSecret: optional(env, "PPMA_GITHUB_WEBHOOK_SECRET", ""),
     githubMonitoredRepos: resolveMonitoredRepos(env),
     metricsPort: resolvePort(env, "PPMA_METRICS_PORT"),
+
+    execMaxOutputBytes: int(env, "PPMA_EXEC_MAX_OUTPUT_BYTES", 1_048_576),
+    turnMaxTools: int(env, "PPMA_TURN_MAX_TOOLS", 0),
+    turnMaxCostUsd: float(env, "PPMA_TURN_MAX_COST_USD", 0),
+    sessionMaxCostUsd: float(env, "PPMA_SESSION_MAX_COST_USD", 0),
   };
 }

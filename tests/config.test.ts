@@ -152,4 +152,38 @@ describe("loadConfig", () => {
     const config = loadConfig({ ...base, PPMA_CONFIRMATION_GATE: "true" });
     expect(config.confirmationGate).toBe(true);
   });
+
+  test("resource limits default to safe values (1 MB exec cap, 0 = unlimited for others)", () => {
+    const config = loadConfig(base);
+    expect(config.execMaxOutputBytes).toBe(1_048_576);
+    expect(config.turnMaxTools).toBe(0);
+    expect(config.turnMaxCostUsd).toBe(0);
+    expect(config.sessionMaxCostUsd).toBe(0);
+  });
+
+  test("PPMA_EXEC_MAX_OUTPUT_BYTES overrides exec output cap", () => {
+    const config = loadConfig({ ...base, PPMA_EXEC_MAX_OUTPUT_BYTES: "524288" });
+    expect(config.execMaxOutputBytes).toBe(524_288);
+  });
+
+  test("PPMA_TURN_MAX_TOOLS overrides per-turn tool budget", () => {
+    const config = loadConfig({ ...base, PPMA_TURN_MAX_TOOLS: "20" });
+    expect(config.turnMaxTools).toBe(20);
+  });
+
+  test("PPMA_TURN_MAX_COST_USD accepts a decimal value", () => {
+    const config = loadConfig({ ...base, PPMA_TURN_MAX_COST_USD: "0.05" });
+    expect(config.turnMaxCostUsd).toBe(0.05);
+  });
+
+  test("PPMA_SESSION_MAX_COST_USD accepts a decimal value", () => {
+    const config = loadConfig({ ...base, PPMA_SESSION_MAX_COST_USD: "1.50" });
+    expect(config.sessionMaxCostUsd).toBe(1.5);
+  });
+
+  test("PPMA_TURN_MAX_COST_USD rejects a non-number value", () => {
+    expect(() => loadConfig({ ...base, PPMA_TURN_MAX_COST_USD: "nope" })).toThrow(
+      /must be a number/,
+    );
+  });
 });

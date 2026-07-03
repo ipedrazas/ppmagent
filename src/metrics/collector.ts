@@ -112,6 +112,20 @@ export class MetricsCollector {
     }
   }
 
+  /** Current accumulated estimated session cost in USD. */
+  sessionCostUsd(): number {
+    return Math.round((this.estimatedTokensTotal / 1_000_000) * this.costPer1M * 10_000) / 10_000;
+  }
+
+  /**
+   * Estimate the cost for a hypothetical turn's token delta without recording
+   * it. Used by spend-limit enforcement before/during a turn.
+   */
+  estimateTurnCostUsd(tokensBefore: number, tokensAfter: number): number {
+    const tokensAdded = Math.max(0, tokensAfter - tokensBefore);
+    return (tokensAdded / 1_000_000) * this.costPer1M;
+  }
+
   recordCompaction(tokensBefore: number, tokensAfter: number): void {
     this.compactionCount++;
     const reclaimed = Math.max(0, tokensBefore - tokensAfter);

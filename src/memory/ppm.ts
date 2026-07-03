@@ -128,6 +128,8 @@ export interface PpmClientOptions {
   root: string;
   /** Logger; defaults to the discarding logger so the client stays test-quiet. */
   logger?: Logger;
+  /** Cap combined subprocess output (stdout+stderr) at this many bytes. 0 = unlimited. */
+  maxOutputBytes?: number;
 }
 
 /**
@@ -149,7 +151,11 @@ export class PpmClient {
    */
   async run<T = unknown>(args: string[], signal?: AbortSignal): Promise<PpmSuccess<T>> {
     const fullArgs = [...args, "--root", this.opts.root, "-o", "json"];
-    const result = await execCommand(this.opts.bin, fullArgs, { signal, logger: this.log });
+    const result = await execCommand(this.opts.bin, fullArgs, {
+      signal,
+      logger: this.log,
+      maxOutputBytes: this.opts.maxOutputBytes,
+    });
     let envelope: PpmEnvelope<T>;
     try {
       envelope = parseEnvelope<T>(result.stdout);

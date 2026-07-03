@@ -21,6 +21,8 @@ export interface ProteosClientOptions {
   url?: string;
   /** Logger; defaults to the discarding logger so the client stays test-quiet. */
   logger?: Logger;
+  /** Cap combined subprocess output (stdout+stderr) at this many bytes. 0 = unlimited. */
+  maxOutputBytes?: number;
 }
 
 export class ProteosError extends Error {
@@ -129,7 +131,11 @@ export class ProteosClient {
     signal?: AbortSignal,
     okCodes: readonly number[] = [EXIT_OK],
   ): Promise<string> {
-    const result = await execCommand(this.opts.bin, args, { signal, logger: this.log });
+    const result = await execCommand(this.opts.bin, args, {
+      signal,
+      logger: this.log,
+      maxOutputBytes: this.opts.maxOutputBytes,
+    });
     if (!okCodes.includes(result.exitCode)) {
       const message =
         result.stderr.trim() || result.stdout.trim() || `proteos exited ${result.exitCode}`;
