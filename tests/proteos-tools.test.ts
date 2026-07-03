@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProteosClient, ProteosError } from "../src/proteos/proteos.ts";
 import { buildProteosTools } from "../src/proteos/tools.ts";
+import { ArgInjectionError } from "../src/sanitize.ts";
+import { CONFIRM_SUFFIX, ConfirmationStore } from "../src/tools/confirmation.ts";
 
 describe("buildProteosTools", () => {
   const proteos = new ProteosClient({ bin: "proteos" });
@@ -19,7 +21,10 @@ describe("buildProteosTools", () => {
       "proteos_git_pr",
       "proteos_git_push",
       "proteos_git_status",
+      "proteos_machine_create",
       "proteos_machine_get",
+      "proteos_machine_start",
+      "proteos_machine_stop",
       "proteos_machines_list",
       "proteos_project_clone",
       "proteos_project_ensure",
@@ -128,6 +133,38 @@ describe("ProteosClient argv + exit handling", () => {
     );
   });
 
+  test("machines create passes template, name, and resource overrides as flags", async () => {
+    const client = new ProteosClient({ bin });
+    const out = await client.createMachine({
+      template: "go",
+      name: "my-box",
+      vcpus: 4,
+      memMiB: 8192,
+      diskMiB: 10240,
+    });
+    expect(out).toBe(
+      "ARGV\tmachines\tcreate\t--template\tgo\t--name\tmy-box\t--vcpus\t4\t--mem-mib\t8192\t--disk-mib\t10240",
+    );
+  });
+
+  test("machines create with only a template omits the optional flags", async () => {
+    const client = new ProteosClient({ bin });
+    const out = await client.createMachine({ template: "full-stack" });
+    expect(out).toBe("ARGV\tmachines\tcreate\t--template\tfull-stack");
+  });
+
+  test("machines create rejects non-positive-integer resource overrides", async () => {
+    const client = new ProteosClient({ bin });
+    expect(() => client.createMachine({ template: "go", vcpus: -4 })).toThrow(ArgInjectionError);
+    expect(() => client.createMachine({ template: "go", memMiB: 1.5 })).toThrow(ArgInjectionError);
+  });
+
+  test("machines start/stop pass the id positionally after the flags", async () => {
+    const client = new ProteosClient({ bin });
+    expect(await client.startMachine("m-1")).toBe("ARGV\tmachines\tstart\tm-1");
+    expect(await client.stopMachine("m-1")).toBe("ARGV\tmachines\tstop\tm-1");
+  });
+
   test("task get tolerates exit 5 (failed/canceled task) and returns its output", async () => {
     const client = new ProteosClient({ bin });
     const out = await client.taskGet("m-1", "t-9");
@@ -144,6 +181,56 @@ describe("ProteosClient argv + exit handling", () => {
     }
     expect(caught).toBeInstanceOf(ProteosError);
     expect((caught as ProteosError).exitCode).toBe(5);
+  });
+});
+
+describe("proteos_machine_create confirmation gate", () => {
+  let dir: string;
+  let bin: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "proteos-confirm-test-"));
+    bin = join(dir, "proteos");
+    await writeFile(bin, FAKE);
+    await chmod(bin, 0o755);
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function createTool(store?: ConfirmationStore) {
+    const proteos = new ProteosClient({ bin });
+    const tool = buildProteosTools(proteos, { confirmationStore: store }).find(
+      (t) => t.name === "proteos_machine_create",
+    );
+    if (!tool) throw new Error("proteos_machine_create not found");
+    return tool;
+  }
+
+  test("with a store: stashes the pending create and terminates without executing", async () => {
+    const store = new ConfirmationStore();
+    const tool = createTool(store);
+    const result = await tool.execute("call-1", { template: "go", name: "my-box", vcpus: 4 });
+
+    expect(result.terminate).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Create machine from template 'go'");
+    expect(text).toContain("Name: my-box");
+    expect(text).toContain("4 vCPU");
+    expect(text).toEndWith(CONFIRM_SUFFIX);
+
+    expect(store.hasPending()).toBe(true);
+    const out = await store.get()?.execute();
+    expect(out).toBe("ARGV\tmachines\tcreate\t--template\tgo\t--name\tmy-box\t--vcpus\t4");
+  });
+
+  test("without a store: executes immediately", async () => {
+    const tool = createTool();
+    const result = await tool.execute("call-1", { template: "go" });
+    expect(result.terminate).toBeUndefined();
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toBe("ARGV\tmachines\tcreate\t--template\tgo");
   });
 });
 

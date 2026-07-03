@@ -9,7 +9,7 @@ import { extractTaskId } from "./watcher.ts";
 export interface ProteosToolsOptions {
   /** Called after a task is dispatched so the background watcher can track it. */
   onTaskDispatched?: (machine: string, taskId: string, project: string, label: string) => void;
-  /** When set, git push and git PR require user confirmation before executing. */
+  /** When set, machine create, git push, and git PR require user confirmation before executing. */
   confirmationStore?: ConfirmationStore;
 }
 
@@ -49,6 +49,69 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
     parameters: Type.Object({ machine: Type.String({ description: "machine id, e.g. m-123" }) }),
     execute: async (_id, params, signal) => {
       const out = await proteos.getMachine(params.machine, signal);
+      return toolResult(out, { output: out });
+    },
+  });
+
+  // ── Machine lifecycle ──
+
+  const createMachine = defineTool({
+    name: "proteos_machine_create",
+    description:
+      "Create a new machine from a template (list them with proteos_templates_list). Provisions billable compute, so it requires user confirmation. Asynchronous — the machine boots in the background; poll proteos_machine_get until it is running.",
+    label: "Create machine",
+    parameters: Type.Object({
+      template: Type.String({ description: "template id, e.g. go, full-stack" }),
+      name: Type.Optional(Type.String({ description: "display name for the machine" })),
+      vcpus: Type.Optional(Type.Integer({ description: "override vCPU count" })),
+      memMiB: Type.Optional(Type.Integer({ description: "override memory in MiB" })),
+      diskMiB: Type.Optional(Type.Integer({ description: "override disk size in MiB" })),
+    }),
+    execute: async (_id, params, signal) => {
+      const sanitized = {
+        ...params,
+        template: sanitizeLine(params.template),
+        name: params.name !== undefined ? sanitizeLine(params.name) : undefined,
+      };
+
+      if (opts?.confirmationStore) {
+        const lines = [`Create machine from template '${sanitized.template}'`];
+        if (sanitized.name) lines.push(`  Name: ${sanitized.name}`);
+        const overrides = [
+          sanitized.vcpus !== undefined ? `${sanitized.vcpus} vCPU` : null,
+          sanitized.memMiB !== undefined ? `${sanitized.memMiB} MiB mem` : null,
+          sanitized.diskMiB !== undefined ? `${sanitized.diskMiB} MiB disk` : null,
+        ].filter(Boolean);
+        if (overrides.length > 0) lines.push(`  Resources: ${overrides.join(", ")}`);
+        const description = lines.join("\n");
+        opts.confirmationStore.set(description, (s) => proteos.createMachine(sanitized, s));
+        return toolResult(`${description}${CONFIRM_SUFFIX}`, { output: "" }, { terminate: true });
+      }
+
+      const out = await proteos.createMachine(sanitized, signal);
+      return toolResult(out, { output: out });
+    },
+  });
+
+  const startMachine = defineTool({
+    name: "proteos_machine_start",
+    description: "Start a stopped machine by its id.",
+    label: "Start machine",
+    parameters: Type.Object({ machine: Type.String({ description: "machine id, e.g. m-123" }) }),
+    execute: async (_id, params, signal) => {
+      const out = await proteos.startMachine(params.machine, signal);
+      return toolResult(out, { output: out });
+    },
+  });
+
+  const stopMachine = defineTool({
+    name: "proteos_machine_stop",
+    description:
+      "Stop a running machine by its id. Running tasks on it are interrupted; the machine can be started again later.",
+    label: "Stop machine",
+    parameters: Type.Object({ machine: Type.String({ description: "machine id, e.g. m-123" }) }),
+    execute: async (_id, params, signal) => {
+      const out = await proteos.stopMachine(params.machine, signal);
       return toolResult(out, { output: out });
     },
   });
@@ -376,6 +439,9 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
   return [
     listMachines,
     getMachine,
+    createMachine,
+    startMachine,
+    stopMachine,
     listTemplates,
     listRepos,
     listProjects,

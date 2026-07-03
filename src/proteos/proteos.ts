@@ -2,12 +2,24 @@ import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import { redactArgs } from "../redact.ts";
 import {
+  ArgInjectionError,
   validateArg,
   validateBranchName,
   validateFreeText,
   validateId,
   validateRepo,
 } from "../sanitize.ts";
+
+/**
+ * Format a model-supplied resource override (vcpus, MiB sizes) for argv.
+ * Rejects anything but a positive integer so a negative or non-finite number
+ * can never become a flag-like or malformed argument.
+ */
+function positiveInt(value: number, label: string): string {
+  if (!Number.isInteger(value) || value <= 0)
+    throw new ArgInjectionError(`${label} must be a positive integer, got: ${value}`);
+  return String(value);
+}
 
 export interface ProteosClientOptions {
   /** `proteos` binary (path or name on PATH). */
@@ -86,6 +98,19 @@ export interface GitPrInput {
   /** Target branch; defaults to the repo's default branch. */
   base?: string;
   body?: string;
+}
+
+export interface MachineCreateInput {
+  /** Template id the machine is created from (see {@link listTemplates}). */
+  template: string;
+  /** Display name for the machine. */
+  name?: string;
+  /** Override vCPU count (template default when omitted). */
+  vcpus?: number;
+  /** Override memory in MiB (template default when omitted). */
+  memMiB?: number;
+  /** Override disk size in MiB (template default when omitted). */
+  diskMiB?: number;
 }
 
 export interface TaskRunInput {
@@ -168,6 +193,32 @@ export class ProteosClient {
 
   getMachine(id: string, signal?: AbortSignal): Promise<string> {
     return this.exec(["machines", "get", ...this.flags(), validateId(id)], signal);
+  }
+
+  // ── Machine lifecycle (create / start / stop) ──
+
+  /**
+   * Create a machine from a template. Async: the server boots it in the
+   * background, so the returned state is usually still `provisioning` — poll
+   * {@link getMachine} until it is running.
+   */
+  createMachine(input: MachineCreateInput, signal?: AbortSignal): Promise<string> {
+    const args = ["machines", "create", ...this.flags(), "--template", validateId(input.template)];
+    if (input.name) args.push("--name", validateArg(input.name, "machine name"));
+    if (input.vcpus !== undefined) args.push("--vcpus", positiveInt(input.vcpus, "vcpus"));
+    if (input.memMiB !== undefined) args.push("--mem-mib", positiveInt(input.memMiB, "memMiB"));
+    if (input.diskMiB !== undefined) args.push("--disk-mib", positiveInt(input.diskMiB, "diskMiB"));
+    return this.exec(args, signal);
+  }
+
+  /** Start a stopped machine by id. */
+  startMachine(id: string, signal?: AbortSignal): Promise<string> {
+    return this.exec(["machines", "start", ...this.flags(), validateId(id)], signal);
+  }
+
+  /** Stop a running machine by id. */
+  stopMachine(id: string, signal?: AbortSignal): Promise<string> {
+    return this.exec(["machines", "stop", ...this.flags(), validateId(id)], signal);
   }
 
   listTemplates(signal?: AbortSignal): Promise<string> {
