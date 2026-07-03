@@ -22,6 +22,7 @@ function fakeBuilt(): BuiltAgent {
   return {
     agent: { state: { messages: [] as AgentMessage[] } },
     ppm: { write: async () => ({}) },
+    memoryContext: { hook: async (m: AgentMessage[]) => m, sliceTokens: () => 0 },
   } as unknown as BuiltAgent;
 }
 

@@ -147,7 +147,7 @@ describe.skipIf(!ppmBin)("ppm integration", () => {
 
   describe("transformContext injection", () => {
     test("prepends the slice as a sentinel-tagged user message", async () => {
-      const transform = makeTransformContext({
+      const { hook: transform } = makeTransformContext({
         ppm,
         recent: 3,
         getActiveProject: () => PROJECT,
@@ -162,7 +162,7 @@ describe.skipIf(!ppmBin)("ppm integration", () => {
     });
 
     test("replaces a prior injected slice instead of stacking", async () => {
-      const transform = makeTransformContext({
+      const { hook: transform } = makeTransformContext({
         ppm,
         recent: 3,
         getActiveProject: () => PROJECT,
@@ -179,7 +179,11 @@ describe.skipIf(!ppmBin)("ppm integration", () => {
     });
 
     test("no active project leaves the transcript untouched", async () => {
-      const transform = makeTransformContext({ ppm, recent: 3, getActiveProject: () => undefined });
+      const { hook: transform } = makeTransformContext({
+        ppm,
+        recent: 3,
+        getActiveProject: () => undefined,
+      });
       const input = [{ role: "user" as const, content: "hi", timestamp: 1 }];
       const out = await transform(input);
       expect(out.length).toBe(1);

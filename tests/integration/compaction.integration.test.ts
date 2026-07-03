@@ -98,7 +98,11 @@ describe.skipIf(!ppmBin)("compaction preserves memory (claim 4)", () => {
     expect(JSON.stringify(outcome.messages)).not.toContain(DECISION);
 
     // But the decision is recalled — re-injected from memory by transformContext.
-    const transform = makeTransformContext({ ppm, recent: 5, getActiveProject: () => PROJECT });
+    const { hook: transform } = makeTransformContext({
+      ppm,
+      recent: 5,
+      getActiveProject: () => PROJECT,
+    });
     const injected = await transform(outcome.messages);
     const slice = injected.find(
       (m) =>

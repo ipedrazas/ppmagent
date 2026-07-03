@@ -135,7 +135,8 @@ export class TurnRunner {
         if (t) outbound.push(t);
       }
     });
-    const tokensBefore = contextTokens(session.messages);
+    const sliceTokens = () => this.deps.built.memoryContext.sliceTokens();
+    const tokensBefore = contextTokens(session.messages) + sliceTokens();
     try {
       await this.deps.built.agent.prompt(text);
     } catch (error) {
@@ -145,7 +146,7 @@ export class TurnRunner {
       this.deps.metrics?.recordTurn({
         durationMs,
         tokensBefore,
-        tokensAfter: contextTokens(session.messages),
+        tokensAfter: contextTokens(session.messages) + sliceTokens(),
         error: true,
       });
       throw error;
@@ -154,7 +155,7 @@ export class TurnRunner {
       unsubscribe();
     }
 
-    const tokensAfter = contextTokens(session.messages);
+    const tokensAfter = contextTokens(session.messages) + sliceTokens();
     const assistant = lastAssistantText(session.messages);
     if (assistant) outbound.push(assistant);
 
