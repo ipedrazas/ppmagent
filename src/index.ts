@@ -79,9 +79,12 @@ async function main(): Promise<void> {
   // The session owns the active project, so the memory-injection seam reads it
   // directly — no mutable bot holder. Built before the agent; its transcript is
   // bound with attach() once the agent exists.
-  const secrets = [config.telegramBotToken, config.apiKey, config.githubWebhookSecret].filter(
-    Boolean,
-  );
+  const secrets = [
+    config.telegramBotToken,
+    config.apiKey,
+    config.githubWebhookSecret,
+    config.githubToken,
+  ].filter(Boolean);
   const store = new SessionStore(config.sessionFile, (v) => redactDeep(v, secrets));
   const session = new ChatSession(config, { store, recorder, metrics, logger });
   const built = buildAgent(config, () => session.activeProject, {

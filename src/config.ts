@@ -114,6 +114,15 @@ export interface Config {
    * Set `PPMA_METRICS_PORT` to expose a live JSON metrics snapshot.
    */
   metricsPort: number | null;
+
+  /**
+   * GitHub Personal Access Token (or GitHub App installation token) forwarded
+   * to the `proteos` CLI so that `gh` is authenticated on ProteOS machines.
+   * Required for `proteos_git_pr` to open PRs and for headless coding agents
+   * dispatched via `proteos_task_run` to run `gh pr create`. Empty = not set
+   * (git push still works via deploy keys, but PR creation will fail).
+   */
+  githubToken: string;
 }
 
 /** Environment shape we read from — a subset of `process.env`. */
@@ -244,5 +253,6 @@ export function loadConfig(env: Env = process.env): Config {
     githubWebhookSecret: optional(env, "PPMA_GITHUB_WEBHOOK_SECRET", ""),
     githubMonitoredRepos: resolveMonitoredRepos(env),
     metricsPort: resolvePort(env, "PPMA_METRICS_PORT"),
+    githubToken: optional(env, "GITHUB_TOKEN", ""),
   };
 }

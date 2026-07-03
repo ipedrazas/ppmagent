@@ -21,6 +21,14 @@ export interface ProteosClientOptions {
   url?: string;
   /** Logger; defaults to the discarding logger so the client stays test-quiet. */
   logger?: Logger;
+  /**
+   * GitHub token forwarded to the `proteos` subprocess as `GITHUB_TOKEN`.
+   * The `proteos` CLI reads it from its environment and injects it into ProteOS
+   * machines so that `gh` is authenticated for PR creation in both the
+   * `git pr` command path and headless coding-agent tasks (`task run`).
+   * When omitted the inherited process environment is used as-is.
+   */
+  githubToken?: string;
 }
 
 export class ProteosError extends Error {
@@ -129,7 +137,8 @@ export class ProteosClient {
     signal?: AbortSignal,
     okCodes: readonly number[] = [EXIT_OK],
   ): Promise<string> {
-    const result = await execCommand(this.opts.bin, args, { signal, logger: this.log });
+    const env = this.opts.githubToken ? { GITHUB_TOKEN: this.opts.githubToken } : undefined;
+    const result = await execCommand(this.opts.bin, args, { signal, logger: this.log, env });
     if (!okCodes.includes(result.exitCode)) {
       const message =
         result.stderr.trim() || result.stdout.trim() || `proteos exited ${result.exitCode}`;

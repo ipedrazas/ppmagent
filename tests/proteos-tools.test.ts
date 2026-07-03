@@ -59,6 +59,14 @@ if [ "$1" = "git" ] && [ "$2" = "status" ]; then exit 5; fi
 exit 0
 `;
 
+/**
+ * A fake `proteos` binary that echoes the GITHUB_TOKEN environment variable so
+ * we can verify ProteosClient forwards it via the subprocess environment.
+ */
+const FAKE_ENV_ECHO = `#!/usr/bin/env bash
+echo "GITHUB_TOKEN=$GITHUB_TOKEN"
+`;
+
 describe("ProteosClient argv + exit handling", () => {
   let dir: string;
   let bin: string;
@@ -136,5 +144,33 @@ describe("ProteosClient argv + exit handling", () => {
     }
     expect(caught).toBeInstanceOf(ProteosError);
     expect((caught as ProteosError).exitCode).toBe(5);
+  });
+});
+
+describe("ProteosClient GITHUB_TOKEN forwarding", () => {
+  let dir: string;
+  let bin: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "proteos-env-test-"));
+    bin = join(dir, "proteos");
+    await writeFile(bin, FAKE_ENV_ECHO);
+    await chmod(bin, 0o755);
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("injects GITHUB_TOKEN into the subprocess environment when configured", async () => {
+    const client = new ProteosClient({ bin, githubToken: "ghp_testtoken" });
+    const out = await client.listMachines();
+    expect(out).toBe("GITHUB_TOKEN=ghp_testtoken");
+  });
+
+  test("does not override GITHUB_TOKEN when githubToken is omitted", async () => {
+    const client = new ProteosClient({ bin });
+    const out = await client.listMachines();
+    expect(out).toBe("GITHUB_TOKEN=");
   });
 });
