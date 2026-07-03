@@ -100,6 +100,14 @@ export interface MaybeCompactArgs {
    */
   flush?: (summary: string, signal?: AbortSignal) => Promise<void>;
   signal?: AbortSignal;
+  /**
+   * Additional tokens not represented in `messages` — e.g. the ephemeral
+   * memory-injection slice that `transformContext` prepends for every API call
+   * but does not store in the transcript. Added to both `tokensBefore` and
+   * `tokensAfter` so the compaction outcome reflects what the model actually
+   * consumes.
+   */
+  extraTokens?: number;
 }
 
 export interface CompactionOutcome {
@@ -122,8 +130,9 @@ export async function maybeCompact({
   summarize,
   flush,
   signal,
+  extraTokens = 0,
 }: MaybeCompactArgs): Promise<CompactionOutcome> {
-  const tokensBefore = contextTokens(messages);
+  const tokensBefore = contextTokens(messages) + extraTokens;
   if (
     tokensBefore < resolveThreshold(policy.threshold) ||
     messages.length <= policy.keepRecent // over threshold but nothing to drop
@@ -140,6 +149,6 @@ export async function maybeCompact({
     compacted: true,
     messages: compacted,
     tokensBefore,
-    tokensAfter: contextTokens(compacted),
+    tokensAfter: contextTokens(compacted) + extraTokens,
   };
 }

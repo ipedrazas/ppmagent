@@ -130,3 +130,49 @@ describe("placeholderSummarizer", () => {
     expect(summary).toContain("memory");
   });
 });
+
+describe("maybeCompact — extraTokens", () => {
+  test("extraTokens are added to tokensBefore when not compacting", async () => {
+    const input = transcript(4);
+    const out = await maybeCompact({
+      messages: input,
+      policy: { threshold: 1_000_000_000, keepRecent: 2 },
+      summarize: stub,
+      extraTokens: 500,
+    });
+    expect(out.compacted).toBe(false);
+    expect(out.tokensBefore).toBeGreaterThanOrEqual(500);
+    expect(out.tokensAfter).toBe(out.tokensBefore);
+  });
+
+  test("extraTokens are added to both tokensBefore and tokensAfter when compacting", async () => {
+    const out = await maybeCompact({
+      messages: transcript(8),
+      policy: { threshold: 1, keepRecent: 2 },
+      summarize: stub,
+      extraTokens: 300,
+    });
+    expect(out.compacted).toBe(true);
+    // Both counts include the extra tokens.
+    expect(out.tokensBefore).toBeGreaterThanOrEqual(300);
+    expect(out.tokensAfter).toBeGreaterThanOrEqual(300);
+    // The transcript shrank, so tokensAfter < tokensBefore even with extras.
+    expect(out.tokensAfter).toBeLessThan(out.tokensBefore);
+  });
+
+  test("omitting extraTokens defaults to 0 (no regression)", async () => {
+    const a = await maybeCompact({
+      messages: transcript(8),
+      policy: { threshold: 1, keepRecent: 2 },
+      summarize: stub,
+    });
+    const b = await maybeCompact({
+      messages: transcript(8),
+      policy: { threshold: 1, keepRecent: 2 },
+      summarize: stub,
+      extraTokens: 0,
+    });
+    expect(a.tokensBefore).toBe(b.tokensBefore);
+    expect(a.tokensAfter).toBe(b.tokensAfter);
+  });
+});
