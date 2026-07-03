@@ -10,17 +10,20 @@ import { ProteosTaskWatcher } from "./proteos/watcher.ts";
 import { redactDeep } from "./redact.ts";
 import { SessionStore } from "./session/store.ts";
 import { TelegramBot } from "./telegram/bot.ts";
+import { ChatSession } from "./telegram/chat-session.ts";
 import { TelegramClient } from "./telegram/client.ts";
 import { ConfirmationStore } from "./tools/confirmation.ts";
 import { TraceRecorder } from "./trace/recorder.ts";
 
 /**
- * Entrypoint: load config → build the agent (memory injection reads the active
- * project from the bot) → start the Telegram adapter with a durable session.
+ * Entrypoint: load config → create the ChatSession → build the agent (memory
+ * injection reads the active project from the session) → start the Telegram
+ * adapter with a durable session.
  *
- * The bot and agent reference each other (the agent's `transformContext` reads
- * the bot's active project; the bot drives `agent.prompt`). We break the cycle
- * with a mutable holder the `getActiveProject` callback closes over.
+ * The session owns `activeProject`, so the agent's `transformContext` reads it
+ * via `() => session.activeProject` — the session is constructed before the
+ * agent, and the agent's transcript is bound back with `session.attach()`. This
+ * replaces the old mutable bot holder (the dependency now points one way).
  */
 /**
  * The production summarizer: the model-backed one, falling back to the
@@ -64,15 +67,25 @@ async function main(): Promise<void> {
   // but ProteosTaskWatcher needs built.proteos. The holder is set before any turn
   // runs, so the callback is always populated by the time it fires.
   const watcherHolder: { watcher?: ProteosTaskWatcher } = {};
-  const holder: { bot?: TelegramBot } = {};
   const confirmationStore = config.confirmationGate ? new ConfirmationStore() : undefined;
-  const built = buildAgent(config, () => holder.bot?.getActiveProject(), {
+
+  // The session owns the active project, so the memory-injection seam reads it
+  // directly — no mutable bot holder. Built before the agent; its transcript is
+  // bound with attach() once the agent exists.
+  const secrets = [config.telegramBotToken, config.apiKey, config.githubWebhookSecret].filter(
+    Boolean,
+  );
+  const store = new SessionStore(config.sessionFile, (v) => redactDeep(v, secrets));
+  const session = new ChatSession(config, { store, recorder, logger });
+  const built = buildAgent(config, () => session.activeProject, {
     logger,
     recorder,
     confirmationStore,
     onTaskDispatched: (machine, taskId, project, label) =>
       watcherHolder.watcher?.watch(machine, taskId, project, label),
   });
+  // The model-backed summarizer needs the built model, so it is injected now.
+  session.attach(built, makeResilientSummarizer(makeModelSummarizer(built.model), logger));
 
   const telegramClient = new TelegramClient(config.telegramBotToken, fetch, logger);
 
@@ -110,18 +123,13 @@ async function main(): Promise<void> {
   });
   watcherHolder.watcher = watcher;
 
-  const secrets = [config.telegramBotToken, config.apiKey, config.githubWebhookSecret].filter(
-    Boolean,
-  );
-  const bot = new TelegramBot(config, built, {
+  const bot = new TelegramBot(config, built, session, {
     client: telegramClient,
-    store: new SessionStore(config.sessionFile, (v) => redactDeep(v, secrets)),
-    summarize: makeResilientSummarizer(makeModelSummarizer(built.model), logger),
+    store,
     recorder,
     logger,
     confirmationStore,
   });
-  holder.bot = bot;
 
   // Graceful shutdown. The container runs `bun` as PID 1, for which the kernel
   // installs no default signal disposition — so an unhandled SIGTERM is ignored

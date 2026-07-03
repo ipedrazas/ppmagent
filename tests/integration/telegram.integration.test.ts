@@ -15,6 +15,7 @@ import type { Config } from "../../src/config.ts";
 import { PpmClient } from "../../src/memory/ppm.ts";
 import { SessionStore } from "../../src/session/store.ts";
 import { TelegramBot } from "../../src/telegram/bot.ts";
+import { ChatSession } from "../../src/telegram/chat-session.ts";
 import type { TelegramClient } from "../../src/telegram/client.ts";
 import { makeTestConfig } from "../support/config.ts";
 
@@ -76,14 +77,14 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
 
   function makeBot(store: SessionStore) {
     const config = testConfig(root);
-    const holder: { bot?: TelegramBot } = {};
-    const built = buildAgent(config, () => holder.bot?.getActiveProject(), {
+    const session = new ChatSession(config, { store });
+    const built = buildAgent(config, () => session.activeProject, {
       model: faux.getModel(),
       streamFn: fauxStream,
     });
+    session.attach(built);
     const { client, sent, chatActions } = fakeClient();
-    const bot = new TelegramBot(config, built, { client, store });
-    holder.bot = bot;
+    const bot = new TelegramBot(config, built, session, { client, store });
     return { bot, sent, chatActions };
   }
 
