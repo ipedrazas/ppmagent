@@ -10,19 +10,26 @@ both land":
 
 - **Pull request required** before merging (0 approvals — solo-maintainer repo;
   the gate is CI, not review).
-- **Required status check:** `typecheck · lint · test` (the `check` job in
-  [`ci.yml`](../workflows/ci.yml)).
-- **Merge queue** (`MERGE` method, `ALLGREEN`): each entry is rebased on the
-  queue head and CI re-runs on the merged result before it lands — so a stale
-  PR can't break `main`. The queue owns "up to date", which is why
-  `strict_required_status_checks_policy` is `false` (GitHub treats the two as
-  mutually exclusive).
+- **Required status check, strict:** `typecheck · lint · test` (the `check` job
+  in [`ci.yml`](../workflows/ci.yml)) must pass **and** the branch must be up to
+  date with `main` before merging (`strict_required_status_checks_policy: true`).
+  Requiring up-to-date is what closes the stale-PR gap: a green-but-behind PR
+  must update — and re-run CI against current `main` — before it can land.
 - Blocks force-push and deletion of `main`.
 
-### Dependency: CI must trigger on `merge_group`
+## Merge queue (optional, not in this ruleset)
 
-`ci.yml` includes a `merge_group:` trigger. Without it the required check never
-runs on a queued batch and **the queue waits forever** — do not remove it.
+A merge queue is the more ergonomic alternative to strict up-to-date — it rebases
+each entry on the queue head and re-runs CI automatically, so contributors don't
+hand-rebase. It is **not** in `main-merge-gate.json` because the REST rulesets API
+and the ruleset JSON-import path both reject the `merge_queue` rule for this repo;
+it can only be turned on in the web UI: **Settings → Rules → Rulesets →
+main-merge-gate → Require merge queue**.
+
+If you enable it, also drop `strict_required_status_checks_policy` back to `false`
+(the queue owns "up to date", and GitHub treats the two as mutually exclusive).
+`ci.yml` already carries the `merge_group:` trigger the queue needs — without it a
+queued batch waits forever for a check that never dispatches, so keep it.
 
 ## Applying
 
@@ -40,4 +47,5 @@ gh api -X PUT repos/ipedrazas/ppmagent/rulesets/<id> --input .github/rulesets/ma
 ```
 
 After applying, confirm on a throwaway PR that the check is listed as **Required**
-and that "Merge when ready" adds it to the queue.
+and that a branch behind `main` shows **"This branch is out-of-date"** and cannot
+merge until updated.
