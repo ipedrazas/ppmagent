@@ -5,6 +5,7 @@ import { loadConfig } from "./config.ts";
 import { PRNotificationStore } from "./github/pr-store.ts";
 import { GitHubWebhookServer } from "./github/webhook-server.ts";
 import { type Logger, createLogger } from "./logger.ts";
+import { runPreflightChecks } from "./preflight.ts";
 import { ProteosTaskWatcher } from "./proteos/watcher.ts";
 import { redactDeep } from "./redact.ts";
 import { SessionStore } from "./session/store.ts";
@@ -44,6 +45,11 @@ async function main(): Promise<void> {
   logger
     .withMetadata({ provider: config.provider, model: config.model, logLevel: config.logLevel })
     .info("ppmagent starting");
+
+  await runPreflightChecks(
+    { ppm: config.ppmBin, dbxcli: config.dbxcliBin, proteos: config.proteosBin },
+    logger,
+  );
 
   // Session traces live beside the sessions themselves; analyzed offline with
   // `bun run trace` (src/trace/extract.ts).
