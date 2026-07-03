@@ -173,6 +173,7 @@ export function buildAgent(
     bin: config.proteosBin,
     url: config.proteosUrl || undefined,
     logger,
+    githubToken: config.githubToken || undefined,
   });
 
   const tools = [

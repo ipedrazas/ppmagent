@@ -30,6 +30,7 @@ export function makeTestConfig(overrides: Partial<Config> = {}): Config {
     githubWebhookSecret: "",
     githubMonitoredRepos: [],
     metricsPort: null,
+    githubToken: "",
     ...overrides,
   };
 }
