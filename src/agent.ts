@@ -183,6 +183,7 @@ export function buildAgent(
     url: config.proteosUrl || undefined,
     logger,
     maxOutputBytes,
+    githubToken: config.githubToken || undefined,
   });
 
   const tools = [

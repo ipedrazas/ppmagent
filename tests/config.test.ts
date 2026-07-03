@@ -186,4 +186,14 @@ describe("loadConfig", () => {
       /must be a number/,
     );
   });
+
+  test("githubToken defaults to empty string when GITHUB_TOKEN is not set", () => {
+    const config = loadConfig(base);
+    expect(config.githubToken).toBe("");
+  });
+
+  test("reads GITHUB_TOKEN from the environment", () => {
+    const config = loadConfig({ ...base, GITHUB_TOKEN: "ghp_testtoken123" });
+    expect(config.githubToken).toBe("ghp_testtoken123");
+  });
 });

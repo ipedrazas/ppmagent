@@ -30,6 +30,7 @@ export function makeTestConfig(overrides: Partial<Config> = {}): Config {
     githubWebhookSecret: "",
     githubMonitoredRepos: [],
     metricsPort: null,
+    githubToken: "",
     execMaxOutputBytes: 1_048_576,
     turnMaxTools: 0,
     turnMaxCostUsd: 0,

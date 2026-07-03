@@ -135,6 +135,15 @@ export interface Config {
    * accumulated session cost would breach this limit. 0 = unlimited.
    */
   sessionMaxCostUsd: number;
+
+  /**
+   * GitHub Personal Access Token (or GitHub App installation token) forwarded
+   * to the `proteos` CLI so that `gh` is authenticated on ProteOS machines.
+   * Required for `proteos_git_pr` to open PRs and for headless coding agents
+   * dispatched via `proteos_task_run` to run `gh pr create`. Empty = not set
+   * (git push still works via deploy keys, but PR creation will fail).
+   */
+  githubToken: string;
 }
 
 /** Environment shape we read from — a subset of `process.env`. */
@@ -275,6 +284,7 @@ export function loadConfig(env: Env = process.env): Config {
     githubWebhookSecret: optional(env, "PPMA_GITHUB_WEBHOOK_SECRET", ""),
     githubMonitoredRepos: resolveMonitoredRepos(env),
     metricsPort: resolvePort(env, "PPMA_METRICS_PORT"),
+    githubToken: optional(env, "GITHUB_TOKEN", ""),
 
     execMaxOutputBytes: int(env, "PPMA_EXEC_MAX_OUTPUT_BYTES", 1_048_576),
     turnMaxTools: int(env, "PPMA_TURN_MAX_TOOLS", 0),
