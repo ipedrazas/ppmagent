@@ -95,6 +95,8 @@ export interface Config {
    * loop.
    */
   confirmationGate: boolean;
+
+  /**
    * HTTP port for the GitHub webhook server. `null` = disabled (default).
    * Set `PPMA_GITHUB_WEBHOOK_PORT` to enable.
    */
