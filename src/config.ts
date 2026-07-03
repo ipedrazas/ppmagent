@@ -88,6 +88,15 @@ export interface Config {
   logFormat: LogFormat;
 
   /**
+   * Whether the confirmation gate is active. When `true` (default), all
+   * mutating operations (tracker create/update, git push/PR) require explicit
+   * user approval before executing. Set `PPMA_CONFIRMATION_GATE=false` to
+   * disable — intended for automated PO agents that run without a human in the
+   * loop.
+   */
+  confirmationGate: boolean;
+
+  /**
    * HTTP port for the GitHub webhook server. `null` = disabled (default).
    * Set `PPMA_GITHUB_WEBHOOK_PORT` to enable.
    */
@@ -224,6 +233,7 @@ export function loadConfig(env: Env = process.env): Config {
     logLevel: oneOf(env, "PPMA_LOG_LEVEL", LOG_LEVELS, "info"),
     logFormat: oneOf(env, "PPMA_LOG_FORMAT", LOG_FORMATS, "json"),
 
+    confirmationGate: env.PPMA_CONFIRMATION_GATE !== "false",
     githubWebhookPort: resolveWebhookPort(env),
     githubWebhookSecret: optional(env, "PPMA_GITHUB_WEBHOOK_SECRET", ""),
     githubMonitoredRepos: resolveMonitoredRepos(env),

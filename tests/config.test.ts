@@ -25,6 +25,7 @@ describe("loadConfig", () => {
     expect(config.telegramAllowedChatId).toBe(12345);
     expect(config.logLevel).toBe("info");
     expect(config.logFormat).toBe("json");
+    expect(config.confirmationGate).toBe(true);
   });
 
   test("parses custom proteos watch interval", () => {
@@ -135,5 +136,20 @@ describe("loadConfig", () => {
 
   test("rejects non-integer numeric vars", () => {
     expect(() => loadConfig({ ...base, PPMA_CONTEXT_RECENT: "abc" })).toThrow(/integer/);
+  });
+
+  test("confirmation gate is enabled by default", () => {
+    const config = loadConfig(base);
+    expect(config.confirmationGate).toBe(true);
+  });
+
+  test("PPMA_CONFIRMATION_GATE=false disables the gate", () => {
+    const config = loadConfig({ ...base, PPMA_CONFIRMATION_GATE: "false" });
+    expect(config.confirmationGate).toBe(false);
+  });
+
+  test("PPMA_CONFIRMATION_GATE=true keeps the gate enabled", () => {
+    const config = loadConfig({ ...base, PPMA_CONFIRMATION_GATE: "true" });
+    expect(config.confirmationGate).toBe(true);
   });
 });
