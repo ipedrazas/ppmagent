@@ -51,6 +51,7 @@ describe("TelegramBot.start — failed turn notification", () => {
       ppm: {},
       databox: {},
       proteos: {},
+      memoryContext: { hook: async (m: unknown[]) => m, sliceTokens: () => 0 },
     } as unknown as BuiltAgent;
 
     const config = makeTestConfig();
@@ -99,6 +100,7 @@ describe("TelegramBot.start — failed turn notification", () => {
       ppm: {},
       databox: {},
       proteos: {},
+      memoryContext: { hook: async (m: unknown[]) => m, sliceTokens: () => 0 },
     } as unknown as BuiltAgent;
 
     const config = makeTestConfig();

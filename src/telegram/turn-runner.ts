@@ -126,8 +126,42 @@ export class TurnRunner {
       );
     }
 
+    // Session cost limit — refuse the turn if the accumulated spend is already over budget.
+    if (this.deps.config.sessionMaxCostUsd > 0 && this.deps.metrics) {
+      const spent = this.deps.metrics.sessionCostUsd();
+      if (spent >= this.deps.config.sessionMaxCostUsd) {
+        turnLog
+          .withMetadata({ spent, limit: this.deps.config.sessionMaxCostUsd })
+          .warn("session cost limit reached");
+        return this.reply(
+          chatId,
+          `Session cost limit of $${this.deps.config.sessionMaxCostUsd} reached` +
+            ` (spent ~$${spent.toFixed(4)}). Start a /new session to continue.`,
+        );
+      }
+    }
+
     const outbound: string[] = [];
     const stopTyping = this.startTyping(chatId);
+
+    // Per-turn tool budget — block and abort when the per-turn call count is exceeded.
+    const prevBeforeToolCall = this.deps.built.agent.beforeToolCall;
+    if (this.deps.config.turnMaxTools > 0) {
+      let toolsUsed = 0;
+      const limit = this.deps.config.turnMaxTools;
+      this.deps.built.agent.beforeToolCall = async (ctx, signal) => {
+        toolsUsed++;
+        if (toolsUsed > limit) {
+          this.deps.built.agent.abort();
+          return {
+            block: true,
+            reason: `Per-turn tool budget of ${limit} call(s) exceeded.`,
+          };
+        }
+        return prevBeforeToolCall ? prevBeforeToolCall(ctx, signal) : undefined;
+      };
+    }
+
     const unsubscribe = this.deps.built.agent.subscribe((event) => {
       if (event.type === "tool_execution_end" && isTerminating(event.result)) {
         // Capture text from any tool that terminates the loop (ask_user, confirmation gates).
@@ -135,7 +169,27 @@ export class TurnRunner {
         if (t) outbound.push(t);
       }
     });
-    const tokensBefore = contextTokens(session.messages);
+    const sliceTokens = () => this.deps.built.memoryContext.sliceTokens();
+    const tokensBefore = contextTokens(session.messages) + sliceTokens();
+
+    // Per-turn cost limit — abort mid-turn when the estimated spend exceeds the threshold.
+    let turnCostExceeded = false;
+    const costMetrics = this.deps.config.turnMaxCostUsd > 0 ? this.deps.metrics : undefined;
+    const unsubscribeCost = costMetrics
+      ? this.deps.built.agent.subscribe((event) => {
+          if (event.type !== "turn_end") return;
+          const tokensNow = contextTokens(session.messages) + sliceTokens();
+          const cost = costMetrics.estimateTurnCostUsd(tokensBefore, tokensNow);
+          if (cost > this.deps.config.turnMaxCostUsd) {
+            turnCostExceeded = true;
+            turnLog
+              .withMetadata({ cost, limit: this.deps.config.turnMaxCostUsd })
+              .warn("per-turn cost limit exceeded");
+            this.deps.built.agent.abort();
+          }
+        })
+      : null;
+
     try {
       await this.deps.built.agent.prompt(text);
     } catch (error) {
@@ -145,18 +199,26 @@ export class TurnRunner {
       this.deps.metrics?.recordTurn({
         durationMs,
         tokensBefore,
-        tokensAfter: contextTokens(session.messages),
+        tokensAfter: contextTokens(session.messages) + sliceTokens(),
         error: true,
       });
       throw error;
     } finally {
       stopTyping();
       unsubscribe();
+      unsubscribeCost?.();
+      this.deps.built.agent.beforeToolCall = prevBeforeToolCall;
     }
 
-    const tokensAfter = contextTokens(session.messages);
+    const tokensAfter = contextTokens(session.messages) + sliceTokens();
     const assistant = lastAssistantText(session.messages);
     if (assistant) outbound.push(assistant);
+
+    if (turnCostExceeded) {
+      outbound.push(
+        `[Per-turn cost limit of $${this.deps.config.turnMaxCostUsd} reached. Processing stopped.]`,
+      );
+    }
 
     const outcome = await session.compact(this.deps.config.compactionTokenThreshold);
     if (outcome.compacted) {

@@ -9,6 +9,8 @@ export interface DataboxClientOptions {
   config: string;
   /** Logger; defaults to the discarding logger so the client stays test-quiet. */
   logger?: Logger;
+  /** Cap combined subprocess output (stdout+stderr) at this many bytes. 0 = unlimited. */
+  maxOutputBytes?: number;
 }
 
 /**
@@ -368,6 +370,7 @@ export class DataboxClient {
     const result = await execCommand(this.opts.bin, [...this.baseArgs(), ...args], {
       signal,
       logger: this.log,
+      maxOutputBytes: this.opts.maxOutputBytes,
     });
     if (result.exitCode !== 0) {
       const message =

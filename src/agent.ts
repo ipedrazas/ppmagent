@@ -3,7 +3,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import type { Config } from "./config.ts";
 import { type Logger, nullLogger } from "./logger.ts";
-import { makeTransformContext } from "./memory/context.ts";
+import { type MemoryContextHook, makeTransformContext } from "./memory/context.ts";
 import { PpmClient } from "./memory/ppm.ts";
 import { buildMemoryTools } from "./memory/tools.ts";
 import type { MetricsCollector } from "./metrics/collector.ts";
@@ -78,6 +78,8 @@ export interface BuiltAgent {
   ppm: PpmClient;
   databox: DataboxClient;
   proteos: ProteosClient;
+  /** Memory-injection seam; `sliceTokens()` returns the ephemeral slice size for token accounting. */
+  memoryContext: MemoryContextHook;
 }
 
 export interface BuildAgentOverrides {
@@ -163,16 +165,25 @@ export function buildAgent(
   overrides: BuildAgentOverrides = {},
 ): BuiltAgent {
   const logger = overrides.logger ?? nullLogger;
-  const ppm = new PpmClient({ bin: config.ppmBin, root: config.ppmMemoryRoot, logger });
+  const maxOutputBytes = config.execMaxOutputBytes;
+  const ppm = new PpmClient({
+    bin: config.ppmBin,
+    root: config.ppmMemoryRoot,
+    logger,
+    maxOutputBytes,
+  });
   const databox = new DataboxClient({
     bin: config.dbxcliBin,
     config: config.dbxcliConfig,
     logger,
+    maxOutputBytes,
   });
   const proteos = new ProteosClient({
     bin: config.proteosBin,
     url: config.proteosUrl || undefined,
     logger,
+    maxOutputBytes,
+    githubToken: config.githubToken || undefined,
   });
 
   const tools = [
@@ -186,23 +197,24 @@ export function buildAgent(
   ];
 
   const model = overrides.model ?? resolveModel(config.provider, config.model);
+  const memoryContext = makeTransformContext({
+    ppm,
+    recent: config.contextRecent,
+    getActiveProject,
+    logger,
+  });
   const agent = new Agent({
     initialState: {
       systemPrompt: SYSTEM_PROMPT,
       model,
       tools,
     },
-    transformContext: makeTransformContext({
-      ppm,
-      recent: config.contextRecent,
-      getActiveProject,
-      logger,
-    }),
+    transformContext: memoryContext.hook,
     streamFn: overrides.streamFn,
     getApiKey: () => config.apiKey,
   });
 
   traceTools(agent, logger, overrides.recorder, overrides.metrics);
 
-  return { agent, model, ppm, databox, proteos };
+  return { agent, model, ppm, databox, proteos, memoryContext };
 }

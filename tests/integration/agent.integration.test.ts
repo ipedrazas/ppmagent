@@ -98,7 +98,11 @@ describe.skipIf(!ppmBin)("agent + ask_user", () => {
     });
     await agent.prompt("improve onboarding");
 
-    const transform = makeTransformContext({ ppm, recent: 3, getActiveProject: () => PROJECT });
+    const { hook: transform } = makeTransformContext({
+      ppm,
+      recent: 3,
+      getActiveProject: () => PROJECT,
+    });
     const injected = await transform([{ role: "user", content: "next message", timestamp: 1 }]);
     const slice = injected.find(
       (m) =>

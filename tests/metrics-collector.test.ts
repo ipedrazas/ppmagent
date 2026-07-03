@@ -122,3 +122,45 @@ describe("MetricsCollector.recordCompaction", () => {
     expect(c.snapshot().compactions.tokensReclaimed).toBe(0);
   });
 });
+
+describe("MetricsCollector.sessionCostUsd", () => {
+  test("returns 0 with no recorded turns", () => {
+    const c = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
+    expect(c.sessionCostUsd()).toBe(0);
+  });
+
+  test("accumulates cost across turns", () => {
+    const c = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
+    // 500k tokens at $6/M = $3
+    c.recordTurn({ durationMs: 10, tokensBefore: 0, tokensAfter: 500_000 });
+    expect(c.sessionCostUsd()).toBe(3);
+    // another 500k → total $6
+    c.recordTurn({ durationMs: 10, tokensBefore: 500_000, tokensAfter: 1_000_000 });
+    expect(c.sessionCostUsd()).toBe(6);
+  });
+
+  test("is 0 for unknown provider", () => {
+    const c = new MetricsCollector({ provider: "unknown", model: "unknown" });
+    c.recordTurn({ durationMs: 10, tokensBefore: 0, tokensAfter: 1_000_000 });
+    expect(c.sessionCostUsd()).toBe(0);
+  });
+});
+
+describe("MetricsCollector.estimateTurnCostUsd", () => {
+  test("returns estimated cost for the token delta", () => {
+    const c = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
+    // 1M tokens at $6/M = $6
+    expect(c.estimateTurnCostUsd(0, 1_000_000)).toBe(6);
+  });
+
+  test("clamps negative delta to zero cost", () => {
+    const c = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
+    expect(c.estimateTurnCostUsd(1_000_000, 500_000)).toBe(0);
+  });
+
+  test("does not record the estimate — snapshot is unchanged", () => {
+    const c = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
+    c.estimateTurnCostUsd(0, 1_000_000);
+    expect(c.snapshot().tokens.estimatedTotal).toBe(0);
+  });
+});

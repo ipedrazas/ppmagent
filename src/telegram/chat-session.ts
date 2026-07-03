@@ -169,6 +169,7 @@ export class ChatSession {
           ]);
         }
       },
+      extraTokens: this.built.memoryContext.sliceTokens(),
     });
     if (outcome.compacted) {
       this.built.agent.state.messages = outcome.messages;
@@ -189,7 +190,7 @@ export class ChatSession {
   /** Human-readable snapshot of context usage vs. the compaction threshold. */
   contextReport(): string {
     const messages = this.built.agent.state.messages;
-    const used = contextTokens(messages);
+    const used = contextTokens(messages) + this.built.memoryContext.sliceTokens();
     const threshold = resolveThreshold(this.config.compactionTokenThreshold);
     const pct = Math.round((used / threshold) * 100);
     return (
