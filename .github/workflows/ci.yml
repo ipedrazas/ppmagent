@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Required so the check runs on merge-queue batches; without this a merge
+  # queue waits forever for a check that never dispatches. See the merge-gate
+  # ruleset in .github/rulesets/main-merge-gate.json (TAV-70).
+  merge_group:
 
 # Cancel superseded runs on the same ref.
 concurrency:
