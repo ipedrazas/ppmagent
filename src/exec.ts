@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { type Logger, nullLogger } from "./logger.ts";
+import { redactArgs } from "./redact.ts";
 
 export interface ExecResult {
   stdout: string;
@@ -21,8 +22,8 @@ export interface ExecOptions {
  * spawned at all.
  *
  * Each invocation logs at `debug` on completion (with exit code and duration)
- * and at `error` if the process fails to spawn. The argv is logged as-is; the
- * `ppm`/`dbxcli` callers do not pass secrets on the command line.
+ * and at `error` if the process fails to spawn. The argv is sanitised with
+ * {@link redactArgs} before logging so sensitive flag values are masked.
  */
 export function execCommand(
   bin: string,
@@ -30,6 +31,7 @@ export function execCommand(
   opts: ExecOptions = {},
 ): Promise<ExecResult> {
   const log = (opts.logger ?? nullLogger).withContext({ bin });
+  const safeArgs = redactArgs(args);
   const startedAt = performance.now();
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, {
@@ -46,13 +48,18 @@ export function execCommand(
       stderr += chunk.toString();
     });
     child.on("error", (error) => {
-      log.withError(error).withMetadata({ args }).error("subprocess failed to spawn");
+      log.withError(error).withMetadata({ args: safeArgs }).error("subprocess failed to spawn");
       reject(error);
     });
-    child.on("close", (code) => {
-      const exitCode = code ?? 0;
+    child.on("close", (code, signal) => {
+      const exitCode = code ?? (signal !== null ? 1 : 0);
       log
-        .withMetadata({ args, exitCode, durationMs: Math.round(performance.now() - startedAt) })
+        .withMetadata({
+          args: safeArgs,
+          exitCode,
+          signal: signal ?? undefined,
+          durationMs: Math.round(performance.now() - startedAt),
+        })
         .debug("subprocess completed");
       resolve({ stdout, stderr, exitCode });
     });

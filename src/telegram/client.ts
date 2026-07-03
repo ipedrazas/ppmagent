@@ -1,6 +1,7 @@
 /** Minimal Telegram Bot API client over fetch — just what the PoC needs. */
 
 import { type Logger, nullLogger } from "../logger.ts";
+import { redact } from "../redact.ts";
 
 export interface InboundMessage {
   chatId: number;
@@ -24,6 +25,7 @@ const MAX_RATE_LIMIT_RETRIES = 5;
 
 export class TelegramClient {
   private readonly base: string;
+  private readonly token: string;
   private readonly log: Logger;
   private readonly sendTimeoutMs: number;
 
@@ -33,9 +35,32 @@ export class TelegramClient {
     logger: Logger = nullLogger,
     sendTimeoutMs = DEFAULT_SEND_TIMEOUT_MS,
   ) {
+    this.token = token;
     this.base = `https://api.telegram.org/bot${token}`;
     this.log = logger.child().withContext({ component: "telegram-client" });
     this.sendTimeoutMs = sendTimeoutMs;
+  }
+
+  /** Scrub the bot token from an error before logging or re-throwing it. */
+  private sanitizeError(err: unknown): Error {
+    if (!(err instanceof Error)) {
+      return new Error(redact(String(err), [this.token]));
+    }
+    const sanitized = new Error(redact(err.message, [this.token]));
+    sanitized.name = err.name;
+    if (err.stack) {
+      sanitized.stack = redact(err.stack, [this.token]);
+    }
+    return sanitized;
+  }
+
+  /** Wraps fetchImpl and sanitizes network errors (which may embed the request URL) before re-throwing. */
+  private async safeFetch(url: string, init?: RequestInit): Promise<Response> {
+    try {
+      return await this.fetchImpl(url, init);
+    } catch (err) {
+      throw this.sanitizeError(err);
+    }
   }
 
   /**
@@ -49,7 +74,7 @@ export class TelegramClient {
     const httpTimeoutMs = (timeoutSec + 5) * 1000;
     const timeoutSignal = AbortSignal.timeout(httpTimeoutMs);
     const effectiveSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-    const res = await this.fetchImpl(url, { signal: effectiveSignal });
+    const res = await this.safeFetch(url, { signal: effectiveSignal });
     const body = (await res.json()) as {
       ok: boolean;
       description?: string;
@@ -116,7 +141,7 @@ export class TelegramClient {
       ? { chat_id: chatId, text, parse_mode: parseMode }
       : { chat_id: chatId, text };
     for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
-      const res = await this.fetchImpl(`${this.base}/sendMessage`, {
+      const res = await this.safeFetch(`${this.base}/sendMessage`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
@@ -150,7 +175,7 @@ export class TelegramClient {
 
   /** Show a transient status (e.g. "typing") in the chat. Expires after ~5 s. */
   async sendChatAction(chatId: number, action: string): Promise<void> {
-    await this.fetchImpl(`${this.base}/sendChatAction`, {
+    await this.safeFetch(`${this.base}/sendChatAction`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, action }),

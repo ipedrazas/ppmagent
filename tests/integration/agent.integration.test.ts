@@ -40,6 +40,9 @@ function testConfig(root: string): Config {
     logLevel: "info",
     logFormat: "json",
     confirmationGate: true,
+    githubWebhookPort: null,
+    githubWebhookSecret: "",
+    githubMonitoredRepos: [],
   };
 }
 

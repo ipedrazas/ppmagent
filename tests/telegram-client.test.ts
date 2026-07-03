@@ -1,6 +1,37 @@
 import { describe, expect, test } from "bun:test";
 import { type FetchLike, TelegramClient } from "../src/telegram/client.ts";
 
+describe("TelegramClient — token scrubbing", () => {
+  test("redacts the bot token from fetch errors before re-throwing", async () => {
+    const token = "secret123token";
+    const fetchStub: FetchLike = async (url) => {
+      throw new Error(`network error fetching ${url}`);
+    };
+    let caught: Error | null = null;
+    try {
+      await new TelegramClient(token, fetchStub).getUpdates(0);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught?.message).not.toContain(token);
+    expect(caught?.message).toContain("[REDACTED]");
+  });
+
+  test("does not alter errors that do not contain the token", async () => {
+    const fetchStub: FetchLike = async () => {
+      throw new Error("plain network failure");
+    };
+    let caught: Error | null = null;
+    try {
+      await new TelegramClient("mytoken", fetchStub).getUpdates(0);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught?.message).toBe("plain network failure");
+  });
+});
+
 describe("TelegramClient.getUpdates", () => {
   test("normalizes text messages and skips non-text updates", async () => {
     const fetchStub: FetchLike = async () =>

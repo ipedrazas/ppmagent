@@ -2,8 +2,12 @@ import { dirname, join } from "node:path";
 import { buildAgent } from "./agent.ts";
 import { type Summarizer, makeModelSummarizer, placeholderSummarizer } from "./compaction.ts";
 import { loadConfig } from "./config.ts";
+import { PRNotificationStore } from "./github/pr-store.ts";
+import { GitHubWebhookServer } from "./github/webhook-server.ts";
 import { type Logger, createLogger } from "./logger.ts";
+import { runPreflightChecks } from "./preflight.ts";
 import { ProteosTaskWatcher } from "./proteos/watcher.ts";
+import { redactDeep } from "./redact.ts";
 import { SessionStore } from "./session/store.ts";
 import { TelegramBot } from "./telegram/bot.ts";
 import { TelegramClient } from "./telegram/client.ts";
@@ -47,6 +51,11 @@ async function main(): Promise<void> {
     })
     .info("ppmagent starting");
 
+  await runPreflightChecks(
+    { ppm: config.ppmBin, dbxcli: config.dbxcliBin, proteos: config.proteosBin },
+    logger,
+  );
+
   // Session traces live beside the sessions themselves; analyzed offline with
   // `bun run trace` (src/trace/extract.ts).
   const recorder = new TraceRecorder(join(dirname(config.sessionFile), "traces"), logger);
@@ -67,6 +76,27 @@ async function main(): Promise<void> {
 
   const telegramClient = new TelegramClient(config.telegramBotToken, fetch, logger);
 
+  let webhookServer: GitHubWebhookServer | null = null;
+  if (config.githubWebhookPort !== null) {
+    const prStore = new PRNotificationStore(join(dirname(config.sessionFile), "github-prs.json"));
+    webhookServer = new GitHubWebhookServer({
+      port: config.githubWebhookPort,
+      secret: config.githubWebhookSecret,
+      prHandlerDeps: {
+        store: prStore,
+        notify: async (msg) => {
+          if (config.telegramAllowedChatId !== undefined) {
+            await telegramClient.sendMessage(config.telegramAllowedChatId, msg);
+          }
+        },
+        monitoredRepos: config.githubMonitoredRepos,
+        logger,
+      },
+      logger,
+    });
+    webhookServer.start();
+  }
+
   const watcher = new ProteosTaskWatcher({
     proteos: built.proteos,
     notify: async (msg) => {
@@ -80,9 +110,12 @@ async function main(): Promise<void> {
   });
   watcherHolder.watcher = watcher;
 
+  const secrets = [config.telegramBotToken, config.apiKey, config.githubWebhookSecret].filter(
+    Boolean,
+  );
   const bot = new TelegramBot(config, built, {
     client: telegramClient,
-    store: new SessionStore(config.sessionFile),
+    store: new SessionStore(config.sessionFile, (v) => redactDeep(v, secrets)),
     summarize: makeResilientSummarizer(makeModelSummarizer(built.model), logger),
     recorder,
     logger,
@@ -102,6 +135,7 @@ async function main(): Promise<void> {
     logger.withMetadata({ signal }).info("received termination signal; shutting down");
     bot.stop();
     watcher.stop();
+    webhookServer?.stop();
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
