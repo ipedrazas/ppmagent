@@ -1,6 +1,7 @@
 import type { BuiltAgent } from "../agent.ts";
 import type { Config } from "../config.ts";
 import { type Logger, nullLogger } from "../logger.ts";
+import type { MetricsCollector } from "../metrics/collector.ts";
 import type { SessionStore } from "../session/store.ts";
 import type { ConfirmationStore } from "../tools/confirmation.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
@@ -16,6 +17,8 @@ export interface TelegramBotDeps {
   store: SessionStore;
   /** Session trace sink (turn/command events). Absent = no tracing. */
   recorder?: TraceRecorder;
+  /** Live metrics collector for turn duration and token usage. */
+  metrics?: MetricsCollector;
   /** Root logger; a `component: telegram-bot` child is derived. Defaults to discarding. */
   logger?: Logger;
   /** When set, the bot intercepts yes/no replies to drive the confirmation gate. */
@@ -75,6 +78,7 @@ export class TelegramBot {
       abortSignal: this.abort.signal,
       confirmationStore: deps.confirmationStore,
       recorder: deps.recorder,
+      metrics: deps.metrics,
       logger: deps.logger,
     });
   }

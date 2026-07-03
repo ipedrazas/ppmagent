@@ -108,6 +108,12 @@ export interface Config {
    * Supports `owner/*` wildcards. Empty list = monitor nothing.
    */
   githubMonitoredRepos: string[];
+
+  /**
+   * HTTP port for the `/metrics` endpoint. `null` = disabled (default).
+   * Set `PPMA_METRICS_PORT` to expose a live JSON metrics snapshot.
+   */
+  metricsPort: number | null;
 }
 
 /** Environment shape we read from — a subset of `process.env`. */
@@ -183,12 +189,12 @@ function resolveAllowedChatId(env: Env): number | undefined {
   return parsed;
 }
 
-function resolveWebhookPort(env: Env): number | null {
-  const raw = env.PPMA_GITHUB_WEBHOOK_PORT;
+function resolvePort(env: Env, key: string): number | null {
+  const raw = env[key];
   if (!raw) return null;
   const parsed = Number.parseInt(raw, 10);
   if (Number.isNaN(parsed) || parsed < 1 || parsed > 65535) {
-    throw new ConfigError(`PPMA_GITHUB_WEBHOOK_PORT must be a valid port (1–65535), got: ${raw}`);
+    throw new ConfigError(`${key} must be a valid port (1–65535), got: ${raw}`);
   }
   return parsed;
 }
@@ -234,8 +240,9 @@ export function loadConfig(env: Env = process.env): Config {
     logFormat: oneOf(env, "PPMA_LOG_FORMAT", LOG_FORMATS, "json"),
 
     confirmationGate: env.PPMA_CONFIRMATION_GATE !== "false",
-    githubWebhookPort: resolveWebhookPort(env),
+    githubWebhookPort: resolvePort(env, "PPMA_GITHUB_WEBHOOK_PORT"),
     githubWebhookSecret: optional(env, "PPMA_GITHUB_WEBHOOK_SECRET", ""),
     githubMonitoredRepos: resolveMonitoredRepos(env),
+    metricsPort: resolvePort(env, "PPMA_METRICS_PORT"),
   };
 }

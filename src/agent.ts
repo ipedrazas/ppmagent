@@ -6,6 +6,7 @@ import { type Logger, nullLogger } from "./logger.ts";
 import { makeTransformContext } from "./memory/context.ts";
 import { PpmClient } from "./memory/ppm.ts";
 import { buildMemoryTools } from "./memory/tools.ts";
+import type { MetricsCollector } from "./metrics/collector.ts";
 import { ProteosClient } from "./proteos/proteos.ts";
 import { buildProteosTools } from "./proteos/tools.ts";
 import { buildAskUserTool } from "./tools/ask-user.ts";
@@ -91,6 +92,8 @@ export interface BuildAgentOverrides {
   logger?: Logger;
   /** Session trace sink; tool start/end events are recorded when present. */
   recorder?: TraceRecorder;
+  /** Live metrics collector; tool call counts and error rates are recorded when present. */
+  metrics?: MetricsCollector;
   /** Called after `proteos_task_run` dispatches a task (for background monitoring). */
   onTaskDispatched?: (machine: string, taskId: string, project: string, label: string) => void;
   /** When set, push/PR and tracker mutations require confirmation before executing. */
@@ -105,7 +108,12 @@ export interface BuildAgentOverrides {
  * present (args clipped; results are not recorded — they live in the transcript).
  * Returns the unsubscribe handle (left attached for the process lifetime).
  */
-function traceTools(agent: Agent, logger: Logger, recorder?: TraceRecorder): () => void {
+function traceTools(
+  agent: Agent,
+  logger: Logger,
+  recorder?: TraceRecorder,
+  metrics?: MetricsCollector,
+): () => void {
   const log = logger.child().withContext({ component: "agent" });
   return agent.subscribe((event) => {
     if (event.type === "tool_execution_start") {
@@ -139,6 +147,7 @@ function traceTools(agent: Agent, logger: Logger, recorder?: TraceRecorder): () 
         toolCallId: event.toolCallId,
         isError: event.isError,
       });
+      metrics?.recordToolCall(event.toolName, event.isError);
     }
   });
 }
@@ -193,7 +202,7 @@ export function buildAgent(
     getApiKey: () => config.apiKey,
   });
 
-  traceTools(agent, logger, overrides.recorder);
+  traceTools(agent, logger, overrides.recorder, overrides.metrics);
 
   return { agent, model, ppm, databox, proteos };
 }
