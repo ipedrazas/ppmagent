@@ -165,16 +165,24 @@ export function buildAgent(
   overrides: BuildAgentOverrides = {},
 ): BuiltAgent {
   const logger = overrides.logger ?? nullLogger;
-  const ppm = new PpmClient({ bin: config.ppmBin, root: config.ppmMemoryRoot, logger });
+  const maxOutputBytes = config.execMaxOutputBytes;
+  const ppm = new PpmClient({
+    bin: config.ppmBin,
+    root: config.ppmMemoryRoot,
+    logger,
+    maxOutputBytes,
+  });
   const databox = new DataboxClient({
     bin: config.dbxcliBin,
     config: config.dbxcliConfig,
     logger,
+    maxOutputBytes,
   });
   const proteos = new ProteosClient({
     bin: config.proteosBin,
     url: config.proteosUrl || undefined,
     logger,
+    maxOutputBytes,
     githubToken: config.githubToken || undefined,
   });
 

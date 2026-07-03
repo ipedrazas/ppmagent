@@ -6,6 +6,8 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** True when combined stdout+stderr was cut at {@link ExecOptions.maxOutputBytes}. */
+  truncated?: boolean;
 }
 
 export interface ExecOptions {
@@ -13,6 +15,11 @@ export interface ExecOptions {
   signal?: AbortSignal;
   /** Logger for subprocess lifecycle lines. Defaults to the discarding logger. */
   logger?: Logger;
+  /**
+   * Cap combined stdout+stderr at this many bytes. When exceeded, accumulation
+   * stops and a warning line is appended to stdout. 0 = unlimited.
+   */
+  maxOutputBytes?: number;
 }
 
 /**
@@ -41,10 +48,42 @@ export function execCommand(
 
     let stdout = "";
     let stderr = "";
+    const cap = opts.maxOutputBytes ?? 0;
+    let totalBytes = 0;
+    let truncated = false;
+
     child.stdout.on("data", (chunk: Buffer) => {
+      if (cap > 0 && totalBytes >= cap) {
+        truncated = true;
+        return;
+      }
+      if (cap > 0) {
+        const remaining = cap - totalBytes;
+        if (chunk.length > remaining) {
+          stdout += chunk.slice(0, remaining).toString();
+          totalBytes = cap;
+          truncated = true;
+          return;
+        }
+        totalBytes += chunk.length;
+      }
       stdout += chunk.toString();
     });
     child.stderr.on("data", (chunk: Buffer) => {
+      if (cap > 0 && totalBytes >= cap) {
+        truncated = true;
+        return;
+      }
+      if (cap > 0) {
+        const remaining = cap - totalBytes;
+        if (chunk.length > remaining) {
+          stderr += chunk.slice(0, remaining).toString();
+          totalBytes = cap;
+          truncated = true;
+          return;
+        }
+        totalBytes += chunk.length;
+      }
       stderr += chunk.toString();
     });
     child.on("error", (error) => {
@@ -53,15 +92,20 @@ export function execCommand(
     });
     child.on("close", (code, signal) => {
       const exitCode = code ?? (signal !== null ? 1 : 0);
+      if (truncated) {
+        stdout += `\n[output truncated: limit ${cap} bytes]`;
+        log.withMetadata({ args: safeArgs, cap }).warn("subprocess output truncated");
+      }
       log
         .withMetadata({
           args: safeArgs,
           exitCode,
           signal: signal ?? undefined,
           durationMs: Math.round(performance.now() - startedAt),
+          ...(truncated ? { truncated: true } : {}),
         })
         .debug("subprocess completed");
-      resolve({ stdout, stderr, exitCode });
+      resolve({ stdout, stderr, exitCode, ...(truncated ? { truncated: true } : {}) });
     });
   });
 }

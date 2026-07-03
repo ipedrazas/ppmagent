@@ -21,6 +21,8 @@ export interface ProteosClientOptions {
   url?: string;
   /** Logger; defaults to the discarding logger so the client stays test-quiet. */
   logger?: Logger;
+  /** Cap combined subprocess output (stdout+stderr) at this many bytes. 0 = unlimited. */
+  maxOutputBytes?: number;
   /**
    * GitHub token forwarded to the `proteos` subprocess as `GITHUB_TOKEN`.
    * The `proteos` CLI reads it from its environment and injects it into ProteOS
@@ -138,7 +140,12 @@ export class ProteosClient {
     okCodes: readonly number[] = [EXIT_OK],
   ): Promise<string> {
     const env = this.opts.githubToken ? { GITHUB_TOKEN: this.opts.githubToken } : undefined;
-    const result = await execCommand(this.opts.bin, args, { signal, logger: this.log, env });
+    const result = await execCommand(this.opts.bin, args, {
+      signal,
+      logger: this.log,
+      maxOutputBytes: this.opts.maxOutputBytes,
+      env,
+    });
     if (!okCodes.includes(result.exitCode)) {
       const message =
         result.stderr.trim() || result.stdout.trim() || `proteos exited ${result.exitCode}`;
