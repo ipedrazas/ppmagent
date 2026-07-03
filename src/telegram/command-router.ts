@@ -8,6 +8,7 @@ import { DEFAULT_KEEP_RECENT, contextTokens } from "../compaction.ts";
 import type { Config } from "../config.ts";
 import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";
+import type { SessionIndex } from "../session/session-index.ts";
 import { shortId } from "../session/store.ts";
 import type { ConfirmationStore } from "../tools/confirmation.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
@@ -26,6 +27,7 @@ function helpText(): string {
     "/session — show session details",
     "/tools — report CLI tool versions",
     "/resume [id|name] — list or switch sessions",
+    "/search [query] — search saved sessions (project:<slug> or name fragment)",
     "/cancel — cancel an in-flight turn",
     "/help — show this message",
   ].join("\n");
@@ -40,6 +42,8 @@ export interface CommandRouterDeps {
   /** When set, `/cancel` clears a pending confirmation. */
   confirmationStore?: ConfirmationStore;
   recorder?: TraceRecorder;
+  /** Session index for the `/search` command. Absent = search unavailable. */
+  index?: SessionIndex;
   logger?: Logger;
 }
 
@@ -134,6 +138,10 @@ export class CommandRouter {
       return this.reply(chatId, reply);
     }
 
+    if (trimmed === "/search" || trimmed.startsWith("/search ")) {
+      return this.reply(chatId, this.searchSessions(trimmed.slice("/search".length).trim()));
+    }
+
     if (trimmed === "/cancel") {
       // When called from the poll loop while a turn is active, the poll loop
       // aborts the agent before routing here. This branch handles the direct
@@ -154,6 +162,44 @@ export class CommandRouter {
   private async reply(chatId: number, text: string): Promise<string[]> {
     await this.deps.send(chatId, [text]);
     return [text];
+  }
+
+  /**
+   * Search the session index and format results. Accepts an optional query:
+   *   - `project:<slug>` — filter by project slug (exact match)
+   *   - anything else — filter by name substring (case-insensitive)
+   *   - empty — list all sessions
+   */
+  private searchSessions(query: string): string {
+    const { index, session } = this.deps;
+    if (!index) return "Session search is unavailable (no index configured).";
+
+    let results = index.list();
+    if (query) {
+      const projectMatch = query.match(/^project:(.+)$/i);
+      if (projectMatch?.[1]) {
+        const slug = projectMatch[1].trim();
+        results = index.search({ project: slug });
+      } else {
+        results = index.search({ name: query });
+      }
+    }
+
+    if (results.length === 0) {
+      return query ? `No sessions match "${query}".` : "No sessions yet.";
+    }
+
+    const currentId = session.sessionId;
+    const lines = results.map((s) => {
+      const label = shortId(s.sessionId);
+      const name = s.name ? ` "${s.name}"` : "";
+      const project = s.activeProject ? `, ${s.activeProject}` : "";
+      const current = s.sessionId === currentId ? " (current)" : "";
+      return `• ${label}${name} — ${s.messageCount} msgs${project}${current}`;
+    });
+
+    const header = query ? `Sessions matching "${query}":` : `Sessions (${results.length}):`;
+    return `${header}\n${lines.join("\n")}`;
   }
 
   /**

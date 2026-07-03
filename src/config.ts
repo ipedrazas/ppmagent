@@ -116,6 +116,33 @@ export interface Config {
   metricsPort: number | null;
 
   /**
+   * Number of days after which an idle session is deleted by the retention
+   * runner. 0 = disabled (sessions accumulate indefinitely). Default: 30.
+   */
+  sessionRetentionDays: number;
+
+  /**
+   * HTTP port for the Telegram webhook transport server. `null` = disabled
+   * (default). When set together with `telegramWebhookUrl`, the agent receives
+   * updates via HTTP POST instead of long-polling. See
+   * `src/telegram/webhook-transport.ts` for the scaling rationale.
+   */
+  telegramWebhookPort: number | null;
+  /**
+   * Public HTTPS URL that Telegram should POST updates to. Required when
+   * `telegramWebhookPort` is set. Telegram will call `setWebhook` with this URL
+   * at startup. Example: `https://bot.example.com/webhook/telegram`.
+   */
+  telegramWebhookUrl: string;
+  /**
+   * Optional secret token sent in `X-Telegram-Bot-Api-Secret-Token` on every
+   * webhook request. Empty = no token verification (only acceptable behind a
+   * firewall or in dev). Set this in production — it proves the POST is from
+   * Telegram and not a random actor who discovered the endpoint.
+   */
+  telegramWebhookSecret: string;
+
+  /**
    * Maximum combined stdout+stderr bytes a subprocess may emit before its output
    * is truncated. 0 = unlimited.
    */
@@ -285,6 +312,11 @@ export function loadConfig(env: Env = process.env): Config {
     githubMonitoredRepos: resolveMonitoredRepos(env),
     metricsPort: resolvePort(env, "PPMA_METRICS_PORT"),
     githubToken: optional(env, "GITHUB_TOKEN", ""),
+
+    sessionRetentionDays: int(env, "PPMA_SESSION_RETENTION_DAYS", 30),
+    telegramWebhookPort: resolvePort(env, "PPMA_TELEGRAM_WEBHOOK_PORT"),
+    telegramWebhookUrl: optional(env, "PPMA_TELEGRAM_WEBHOOK_URL", ""),
+    telegramWebhookSecret: optional(env, "PPMA_TELEGRAM_WEBHOOK_SECRET", ""),
 
     execMaxOutputBytes: int(env, "PPMA_EXEC_MAX_OUTPUT_BYTES", 1_048_576),
     turnMaxTools: int(env, "PPMA_TURN_MAX_TOOLS", 0),

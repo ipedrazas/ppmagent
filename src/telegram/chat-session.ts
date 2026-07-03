@@ -23,6 +23,7 @@ import {
 import type { Config } from "../config.ts";
 import type { Logger } from "../logger.ts";
 import type { MetricsCollector } from "../metrics/collector.ts";
+import type { SessionIndex } from "../session/session-index.ts";
 import { type SessionState, type SessionStore, newSession, shortId } from "../session/store.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
 
@@ -50,6 +51,8 @@ export interface ChatSessionDeps {
   metrics?: MetricsCollector;
   /** Root logger; a `component: chat-session` child is derived. Defaults to discarding. */
   logger?: Logger;
+  /** Session index, updated on every persist (upsert). Absent = no indexing. */
+  index?: SessionIndex;
 }
 
 export class ChatSession {
@@ -113,6 +116,7 @@ export class ChatSession {
   persist(): void {
     this.state.messages = this.built.agent.state.messages;
     this.deps.store.save(this.state);
+    this.deps.index?.upsert(this.state);
   }
 
   /**

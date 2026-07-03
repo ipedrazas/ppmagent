@@ -4,6 +4,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -193,6 +194,19 @@ export class SessionStore {
       }
     }
     return out.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  /**
+   * Remove a session file from the store. Returns `true` if the file existed
+   * and was deleted, `false` if there was nothing to delete. Does not update
+   * the `current` pointer — callers are responsible for not deleting the active
+   * session (the retention runner checks this).
+   */
+  delete(sessionId: string): boolean {
+    const f = this.file(sessionId);
+    if (!existsSync(f)) return false;
+    unlinkSync(f);
+    return true;
   }
 
   /**

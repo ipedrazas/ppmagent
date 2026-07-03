@@ -173,6 +173,22 @@ export class TelegramClient {
     }
   }
 
+  /**
+   * Register a webhook URL with Telegram. Telegram will POST each update to
+   * this URL instead of queuing it for `getUpdates`. Pass `secretToken` to
+   * require the `X-Telegram-Bot-Api-Secret-Token` header on every request.
+   */
+  async setWebhook(url: string, secretToken?: string): Promise<void> {
+    const payload: Record<string, string> = { url };
+    if (secretToken) payload.secret_token = secretToken;
+    await this.safeFetch(`${this.base}/setWebhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(this.sendTimeoutMs),
+    });
+  }
+
   /** Show a transient status (e.g. "typing") in the chat. Expires after ~5 s. */
   async sendChatAction(chatId: number, action: string): Promise<void> {
     await this.safeFetch(`${this.base}/sendChatAction`, {
