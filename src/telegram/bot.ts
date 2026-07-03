@@ -2,6 +2,7 @@ import type { BuiltAgent } from "../agent.ts";
 import type { Config } from "../config.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import type { MetricsCollector } from "../metrics/collector.ts";
+import type { SessionIndex } from "../session/session-index.ts";
 import type { SessionStore } from "../session/store.ts";
 import type { ConfirmationStore } from "../tools/confirmation.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
@@ -23,6 +24,8 @@ export interface TelegramBotDeps {
   logger?: Logger;
   /** When set, the bot intercepts yes/no replies to drive the confirmation gate. */
   confirmationStore?: ConfirmationStore;
+  /** Session index for the `/search` command. Absent = search unavailable. */
+  index?: SessionIndex;
 }
 
 /**
@@ -67,6 +70,7 @@ export class TelegramBot {
       abortSignal: this.abort.signal,
       confirmationStore: deps.confirmationStore,
       recorder: deps.recorder,
+      index: deps.index,
       logger: deps.logger,
     });
     this.turnRunner = new TurnRunner({

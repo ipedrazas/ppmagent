@@ -10,10 +10,13 @@ import { MetricsServer } from "./metrics/server.ts";
 import { runPreflightChecks } from "./preflight.ts";
 import { ProteosTaskWatcher } from "./proteos/watcher.ts";
 import { redactDeep } from "./redact.ts";
+import { SessionRetentionRunner } from "./session/retention.ts";
+import { SessionIndex } from "./session/session-index.ts";
 import { SessionStore } from "./session/store.ts";
 import { TelegramBot } from "./telegram/bot.ts";
 import { ChatSession } from "./telegram/chat-session.ts";
 import { TelegramClient } from "./telegram/client.ts";
+import { TelegramWebhookTransport } from "./telegram/webhook-transport.ts";
 import { ConfirmationStore } from "./tools/confirmation.ts";
 import { TraceRecorder } from "./trace/recorder.ts";
 
@@ -83,7 +86,19 @@ async function main(): Promise<void> {
     Boolean,
   );
   const store = new SessionStore(config.sessionFile, (v) => redactDeep(v, secrets));
-  const session = new ChatSession(config, { store, recorder, metrics, logger });
+
+  // Build the session index from the store so search works on existing sessions.
+  const sessionRoot = dirname(config.sessionFile);
+  const sessionIndex = new SessionIndex(join(sessionRoot, "sessions", "index.json"), logger);
+  sessionIndex.rebuild(store);
+
+  const session = new ChatSession(config, {
+    store,
+    recorder,
+    metrics,
+    logger,
+    index: sessionIndex,
+  });
   const built = buildAgent(config, () => session.activeProject, {
     logger,
     recorder,
@@ -144,7 +159,36 @@ async function main(): Promise<void> {
     metrics,
     logger,
     confirmationStore,
+    index: sessionIndex,
   });
+
+  const retentionRunner = new SessionRetentionRunner({
+    store,
+    retentionDays: config.sessionRetentionDays,
+    currentSessionId: () => session.sessionId,
+    index: sessionIndex,
+    logger,
+  });
+
+  // Webhook transport is an opt-in alternative to the polling loop. When both
+  // PPMA_TELEGRAM_WEBHOOK_PORT and PPMA_TELEGRAM_WEBHOOK_URL are set, Telegram
+  // pushes updates to the webhook endpoint and `bot.start()` is not called. See
+  // src/telegram/webhook-transport.ts for the scaling rationale and trade-offs.
+  let webhookTransport: TelegramWebhookTransport | null = null;
+  if (config.telegramWebhookPort !== null && config.telegramWebhookUrl) {
+    webhookTransport = new TelegramWebhookTransport({
+      port: config.telegramWebhookPort,
+      webhookUrl: config.telegramWebhookUrl,
+      secretToken: config.telegramWebhookSecret || undefined,
+      allowedChatId: config.telegramAllowedChatId,
+      client: telegramClient,
+      handleMessage: (chatId, text) => bot.handleMessage(chatId, text),
+      logger,
+    });
+    logger
+      .withMetadata({ port: config.telegramWebhookPort, url: config.telegramWebhookUrl })
+      .info("webhook transport mode enabled (polling disabled)");
+  }
 
   // Graceful shutdown. The container runs `bun` as PID 1, for which the kernel
   // installs no default signal disposition — so an unhandled SIGTERM is ignored
@@ -158,13 +202,16 @@ async function main(): Promise<void> {
     logger.withMetadata({ signal }).info("received termination signal; shutting down");
     bot.stop();
     watcher.stop();
+    retentionRunner.stop();
     webhookServer?.stop();
     metricsServer?.stop();
+    webhookTransport?.stop();
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 
-  await Promise.all([bot.start(), watcher.start()]);
+  const telegramTransport = webhookTransport ? webhookTransport.start() : bot.start();
+  await Promise.all([telegramTransport, watcher.start(), retentionRunner.start()]);
   logger.info("ppmagent stopped");
 }
 

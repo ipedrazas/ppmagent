@@ -30,6 +30,10 @@ export function makeTestConfig(overrides: Partial<Config> = {}): Config {
     githubWebhookSecret: "",
     githubMonitoredRepos: [],
     metricsPort: null,
+    sessionRetentionDays: 30,
+    telegramWebhookPort: null,
+    telegramWebhookUrl: "",
+    telegramWebhookSecret: "",
     ...overrides,
   };
 }
