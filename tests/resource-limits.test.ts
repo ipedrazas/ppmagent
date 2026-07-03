@@ -332,18 +332,6 @@ describe("TurnRunner — per-turn cost limit", () => {
     const listeners: AgentEventListener[] = [];
     let abortCalled = false;
 
-    const metrics = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
-
-    // Bootstrap 500k tokens to make cost = $3 per estimateTurnCostUsd(0, 500_000)
-    // The session has 0 tokens before the turn, and after "turn_end" there are 500k tokens.
-    // With turnMaxCostUsd = 1, the cost ($3) exceeds the limit.
-
-    // We'll manipulate session messages to simulate token accumulation.
-    // But since contextTokens returns 0 for empty messages and sliceTokens = 0,
-    // we need to make estimateTurnCostUsd return a value > limit.
-    // The easiest way: use a costPer1M and add tokens via a custom metrics that
-    // returns a high cost.
-
     const { built } = makeBuilt({
       onSubscribe: (listener) => {
         listeners.push(listener);
@@ -369,12 +357,12 @@ describe("TurnRunner — per-turn cost limit", () => {
       configOverrides: { turnMaxCostUsd: 0.001 }, // very low limit
     });
 
-    // Simulate: after the turn starts, patch sliceTokens to return 1000 tokens
-    // so estimateTurnCostUsd(0, 1000) = 1000/1M * 30 = $0.03 > $0.001
-    built.memoryContext.sliceTokens = () => 1000;
-
-    // Start the run (it will set up the cost listener)
+    // Start the run (it captures tokensBefore = 0 and sets up the cost listener)
     const runPromise = runner.run(1, "hi");
+
+    // Simulate token growth after the turn started: sliceTokens now reports
+    // 1000 tokens, so estimateTurnCostUsd(0, 1000) = 1000/1M * 30 = $0.03 > $0.001
+    built.memoryContext.sliceTokens = () => 1000;
 
     // Fire a turn_end event to trigger the cost check
     const sig = new AbortController().signal;
