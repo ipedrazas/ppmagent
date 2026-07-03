@@ -1,6 +1,13 @@
 import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import { redactArgs } from "../redact.ts";
+import {
+  validateArg,
+  validateFreeText,
+  validateRef,
+  validateSearchQuery,
+  validateSlug,
+} from "../sanitize.ts";
 
 /**
  * The uniform envelope every `ppm` command emits on stdout in JSON mode.
@@ -169,30 +176,33 @@ export class PpmClient {
   }
 
   projectShow(project: string, signal?: AbortSignal) {
-    return this.run<ProjectShape>(["project", "show", project], signal);
+    return this.run<ProjectShape>(["project", "show", validateSlug(project)], signal);
   }
 
   read(project?: string, opts?: { type?: string; name?: string }, signal?: AbortSignal) {
     const args = ["read"];
-    if (project) args.push(project);
-    if (opts?.type) args.push("--type", opts.type);
-    if (opts?.name) args.push("--name", opts.name);
+    if (project) args.push(validateSlug(project));
+    if (opts?.type) args.push("--type", validateArg(opts.type, "type"));
+    if (opts?.name) args.push("--name", validateArg(opts.name, "name"));
     return this.run<ReadData>(args, signal);
   }
 
   search(query: string, signal?: AbortSignal) {
-    return this.run<SearchData>(["search", query], signal);
+    return this.run<SearchData>(["search", validateSearchQuery(query, "query")], signal);
   }
 
   context(project: string, recent: number, signal?: AbortSignal) {
-    return this.run<ContextData>(["context", project, "--recent", String(recent)], signal);
+    return this.run<ContextData>(
+      ["context", validateSlug(project), "--recent", String(recent)],
+      signal,
+    );
   }
 
   // ── Write side ──
 
   projectCreate(slug: string, title: string, signal?: AbortSignal) {
     return this.run<{ project: string; title: string }>(
-      ["project", "create", slug, "--title", title],
+      ["project", "create", validateSlug(slug), "--title", validateFreeText(title, "title")],
       signal,
     );
   }
@@ -232,34 +242,52 @@ export interface WriteParams {
  */
 export function buildWriteArgs(params: WriteParams): string[] {
   const { project, type, content, name, resolve, ref, url } = params;
+  const safeProject = validateSlug(project);
+  const safeContent = validateFreeText(content, "content");
+  const safeName = name ? validateArg(name, "name") : undefined;
   switch (type) {
     case "summary":
-      return ["summary", "set", project, "--content", content];
+      return ["summary", "set", safeProject, "--content", safeContent];
     case "focus":
-      return ["focus", "set", project, "--content", content];
+      return ["focus", "set", safeProject, "--content", safeContent];
     case "decision":
-      return ["decision", "add", project, "--content", content];
+      return ["decision", "add", safeProject, "--content", safeContent];
     case "question":
       if (resolve) {
-        if (!name) throw new PpmError("resolving a question requires `name`");
-        return ["question", "resolve", project, name, "--content", content];
+        if (!safeName) throw new PpmError("resolving a question requires `name`");
+        return ["question", "resolve", safeProject, safeName, "--content", safeContent];
       }
-      return ["question", "add", project, ...(name ? ["--name", name] : []), "--content", content];
+      return [
+        "question",
+        "add",
+        safeProject,
+        ...(safeName ? ["--name", safeName] : []),
+        "--content",
+        safeContent,
+      ];
     case "task": {
       if (!ref) throw new PpmError("type=task requires `ref`");
-      const urlArgs = url ? ["--url", url] : [];
-      return ["task", "add", project, "--ref", ref, ...urlArgs, "--content", content];
+      const safeRef = validateRef(ref);
+      const urlArgs = url ? ["--url", validateFreeText(url, "url")] : [];
+      return ["task", "add", safeProject, "--ref", safeRef, ...urlArgs, "--content", safeContent];
     }
     case "note":
-      return ["note", "add", project, ...(name ? ["--name", name] : []), "--content", content];
+      return [
+        "note",
+        "add",
+        safeProject,
+        ...(safeName ? ["--name", safeName] : []),
+        "--content",
+        safeContent,
+      ];
     case "conversation":
       return [
         "conversation",
         "add",
-        project,
-        ...(name ? ["--name", name] : []),
+        safeProject,
+        ...(safeName ? ["--name", safeName] : []),
         "--content",
-        content,
+        safeContent,
       ];
   }
 }

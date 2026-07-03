@@ -1,5 +1,6 @@
 import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";
+import { validateFilter, validateRef, validateSearchQuery } from "../sanitize.ts";
 
 export interface DataboxClientOptions {
   /** `dbxcli` binary (path or name on PATH). */
@@ -392,7 +393,7 @@ export class DataboxClient {
   async listTasks(limit = 50, filters: string[] = [], signal?: AbortSignal): Promise<DataboxRow[]> {
     const dataset = await this.datasetAlias("issues", signal);
     const args = ["list", dataset, "--limit", String(limit)];
-    for (const filter of filters) args.push("--filter", filter);
+    for (const filter of filters) args.push("--filter", validateFilter(filter));
     const res = await this.run<ListResponse<DataboxRow>>(args, signal);
     return res.items ?? [];
   }
@@ -400,7 +401,7 @@ export class DataboxClient {
   async searchTasks(query: string, limit = 50, signal?: AbortSignal): Promise<DataboxRow[]> {
     const dataset = await this.datasetAlias("issues", signal);
     const res = await this.run<ListResponse<DataboxRow>>(
-      ["search", dataset, query, "--limit", String(limit)],
+      ["search", dataset, validateSearchQuery(query, "query"), "--limit", String(limit)],
       signal,
     );
     return res.items ?? [];
@@ -413,7 +414,7 @@ export class DataboxClient {
    */
   async getTask(ref: string, signal?: AbortSignal): Promise<DataboxRow> {
     const dataset = await this.datasetAlias("issues", signal);
-    return this.run<DataboxRow>(["get", dataset, ref], signal);
+    return this.run<DataboxRow>(["get", dataset, validateRef(ref)], signal);
   }
 
   /**
