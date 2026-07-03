@@ -7,8 +7,10 @@
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { BuiltAgent } from "../agent.ts";
+import { contextTokens } from "../compaction.ts";
 import type { Config } from "../config.ts";
 import { type Logger, nullLogger } from "../logger.ts";
+import type { MetricsCollector } from "../metrics/collector.ts";
 import { type ConfirmationStore, isApproval, isRejection } from "../tools/confirmation.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
 import type { ChatSession } from "./chat-session.ts";
@@ -53,6 +55,8 @@ export interface TurnRunnerDeps {
   /** When set, the runner drives the confirmation gate on yes/no replies. */
   confirmationStore?: ConfirmationStore;
   recorder?: TraceRecorder;
+  /** Live metrics collector for turn duration and token usage. */
+  metrics?: MetricsCollector;
   logger?: Logger;
 }
 
@@ -131,14 +135,18 @@ export class TurnRunner {
         if (t) outbound.push(t);
       }
     });
+    const tokensBefore = contextTokens(session.messages);
     try {
       await this.deps.built.agent.prompt(text);
     } catch (error) {
+      const durationMs = Math.round(performance.now() - startedAt);
       turnLog.withError(error).error("agent turn failed");
-      recorder?.record({
-        type: "turn_end",
-        durationMs: Math.round(performance.now() - startedAt),
-        error: String(error),
+      recorder?.record({ type: "turn_end", durationMs, error: String(error) });
+      this.deps.metrics?.recordTurn({
+        durationMs,
+        tokensBefore,
+        tokensAfter: contextTokens(session.messages),
+        error: true,
       });
       throw error;
     } finally {
@@ -146,6 +154,7 @@ export class TurnRunner {
       unsubscribe();
     }
 
+    const tokensAfter = contextTokens(session.messages);
     const assistant = lastAssistantText(session.messages);
     if (assistant) outbound.push(assistant);
 
@@ -160,6 +169,7 @@ export class TurnRunner {
     await this.deps.send(chatId, outbound);
     const durationMs = Math.round(performance.now() - startedAt);
     recorder?.record({ type: "turn_end", durationMs, replies: outbound.length });
+    this.deps.metrics?.recordTurn({ durationMs, tokensBefore, tokensAfter });
     turnLog.withMetadata({ replies: outbound.length, durationMs }).info("message handled");
     return outbound;
   }

@@ -22,6 +22,7 @@ import {
 } from "../compaction.ts";
 import type { Config } from "../config.ts";
 import type { Logger } from "../logger.ts";
+import type { MetricsCollector } from "../metrics/collector.ts";
 import { type SessionState, type SessionStore, newSession, shortId } from "../session/store.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
 
@@ -45,6 +46,8 @@ export interface ChatSessionDeps {
   summarize?: Summarizer;
   /** Session trace sink (compaction events). Absent = no tracing. */
   recorder?: TraceRecorder;
+  /** Live metrics collector; compaction token counts are recorded when present. */
+  metrics?: MetricsCollector;
   /** Root logger; a `component: chat-session` child is derived. Defaults to discarding. */
   logger?: Logger;
 }
@@ -172,6 +175,7 @@ export class ChatSession {
         messagesAfter: outcome.messages.length,
         threshold,
       });
+      this.deps.metrics?.recordCompaction(outcome.tokensBefore, outcome.tokensAfter);
     }
     return outcome;
   }

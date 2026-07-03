@@ -5,6 +5,8 @@ import { loadConfig } from "./config.ts";
 import { PRNotificationStore } from "./github/pr-store.ts";
 import { GitHubWebhookServer } from "./github/webhook-server.ts";
 import { type Logger, createLogger } from "./logger.ts";
+import { MetricsCollector } from "./metrics/collector.ts";
+import { MetricsServer } from "./metrics/server.ts";
 import { runPreflightChecks } from "./preflight.ts";
 import { ProteosTaskWatcher } from "./proteos/watcher.ts";
 import { redactDeep } from "./redact.ts";
@@ -62,6 +64,11 @@ async function main(): Promise<void> {
   // Session traces live beside the sessions themselves; analyzed offline with
   // `bun run trace` (src/trace/extract.ts).
   const recorder = new TraceRecorder(join(dirname(config.sessionFile), "traces"), logger);
+  const metrics = new MetricsCollector({
+    logger,
+    provider: config.provider,
+    model: config.model,
+  });
 
   // The watcher holder breaks the init cycle: buildAgent needs onTaskDispatched,
   // but ProteosTaskWatcher needs built.proteos. The holder is set before any turn
@@ -76,10 +83,11 @@ async function main(): Promise<void> {
     Boolean,
   );
   const store = new SessionStore(config.sessionFile, (v) => redactDeep(v, secrets));
-  const session = new ChatSession(config, { store, recorder, logger });
+  const session = new ChatSession(config, { store, recorder, metrics, logger });
   const built = buildAgent(config, () => session.activeProject, {
     logger,
     recorder,
+    metrics,
     confirmationStore,
     onTaskDispatched: (machine, taskId, project, label) =>
       watcherHolder.watcher?.watch(machine, taskId, project, label),
@@ -88,6 +96,12 @@ async function main(): Promise<void> {
   session.attach(built, makeResilientSummarizer(makeModelSummarizer(built.model), logger));
 
   const telegramClient = new TelegramClient(config.telegramBotToken, fetch, logger);
+
+  let metricsServer: MetricsServer | null = null;
+  if (config.metricsPort !== null) {
+    metricsServer = new MetricsServer({ port: config.metricsPort, collector: metrics, logger });
+    metricsServer.start();
+  }
 
   let webhookServer: GitHubWebhookServer | null = null;
   if (config.githubWebhookPort !== null) {
@@ -127,6 +141,7 @@ async function main(): Promise<void> {
     client: telegramClient,
     store,
     recorder,
+    metrics,
     logger,
     confirmationStore,
   });
@@ -144,6 +159,7 @@ async function main(): Promise<void> {
     bot.stop();
     watcher.stop();
     webhookServer?.stop();
+    metricsServer?.stop();
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
