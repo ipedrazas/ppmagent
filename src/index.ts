@@ -39,7 +39,12 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger({ level: config.logLevel, format: config.logFormat });
   logger
-    .withMetadata({ provider: config.provider, model: config.model, logLevel: config.logLevel })
+    .withMetadata({
+      provider: config.provider,
+      model: config.model,
+      logLevel: config.logLevel,
+      confirmationGate: config.confirmationGate,
+    })
     .info("ppmagent starting");
 
   // Session traces live beside the sessions themselves; analyzed offline with
@@ -51,7 +56,7 @@ async function main(): Promise<void> {
   // runs, so the callback is always populated by the time it fires.
   const watcherHolder: { watcher?: ProteosTaskWatcher } = {};
   const holder: { bot?: TelegramBot } = {};
-  const confirmationStore = new ConfirmationStore();
+  const confirmationStore = config.confirmationGate ? new ConfirmationStore() : undefined;
   const built = buildAgent(config, () => holder.bot?.getActiveProject(), {
     logger,
     recorder,
