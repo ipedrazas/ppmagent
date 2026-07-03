@@ -13,6 +13,7 @@ import { buildAgent } from "../../src/agent.ts";
 import type { Config } from "../../src/config.ts";
 import { makeTransformContext } from "../../src/memory/context.ts";
 import { PpmClient } from "../../src/memory/ppm.ts";
+import { makeTestConfig } from "../support/config.ts";
 
 // Step 2 (agent + ask_user) driven by pi's faux provider — deterministic, no
 // API key. Needs the real `ppm` binary for the open-question write, so it skips
@@ -21,29 +22,12 @@ const ppmBin = Bun.which("ppm");
 const PROJECT = "onboarding";
 
 function testConfig(root: string): Config {
-  return {
-    provider: "anthropic",
-    apiKey: "test-key",
-    model: "faux-1",
+  return makeTestConfig({
     ppmBin: ppmBin ?? "ppm",
     ppmMemoryRoot: root,
     contextRecent: 3,
-    dbxcliBin: "dbxcli",
-    dbxcliConfig: "",
-    proteosBin: "proteos",
-    proteosUrl: "",
-    proteosWatchIntervalMs: 30_000,
-    telegramBotToken: "test",
-    telegramAllowedChatId: undefined,
     sessionFile: join(root, "session.json"),
-    compactionTokenThreshold: 0,
-    logLevel: "info",
-    logFormat: "json",
-    confirmationGate: true,
-    githubWebhookPort: null,
-    githubWebhookSecret: "",
-    githubMonitoredRepos: [],
-  };
+  });
 }
 
 describe.skipIf(!ppmBin)("agent + ask_user", () => {

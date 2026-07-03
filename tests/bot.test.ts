@@ -1,35 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { BuiltAgent } from "../src/agent.ts";
-import type { Config } from "../src/config.ts";
 import type { SessionStore } from "../src/session/store.ts";
 import { TelegramBot } from "../src/telegram/bot.ts";
 import type { TelegramClient } from "../src/telegram/client.ts";
-
-function minimalConfig(): Config {
-  return {
-    provider: "anthropic",
-    apiKey: "test",
-    model: "claude-sonnet-4-6",
-    ppmBin: "ppm",
-    ppmMemoryRoot: "/tmp",
-    contextRecent: 5,
-    dbxcliBin: "dbxcli",
-    dbxcliConfig: "",
-    proteosBin: "proteos",
-    proteosUrl: "",
-    proteosWatchIntervalMs: 30_000,
-    telegramBotToken: "test",
-    telegramAllowedChatId: undefined,
-    sessionFile: "/tmp/session.json",
-    compactionTokenThreshold: 0,
-    logLevel: "info",
-    logFormat: "json",
-    confirmationGate: true,
-    githubWebhookPort: null,
-    githubWebhookSecret: "",
-    githubMonitoredRepos: [],
-  };
-}
+import { makeTestConfig } from "./support/config.ts";
 
 function mockStore(): SessionStore {
   return {
@@ -78,7 +52,7 @@ describe("TelegramBot.start — failed turn notification", () => {
       proteos: {},
     } as unknown as BuiltAgent;
 
-    const bot = new TelegramBot(minimalConfig(), built, { client, store: mockStore() });
+    const bot = new TelegramBot(makeTestConfig(), built, { client, store: mockStore() });
     ctx.stop = () => bot.stop();
 
     await bot.start();
@@ -122,7 +96,7 @@ describe("TelegramBot.start — failed turn notification", () => {
       proteos: {},
     } as unknown as BuiltAgent;
 
-    const bot = new TelegramBot(minimalConfig(), built, { client, store: mockStore() });
+    const bot = new TelegramBot(makeTestConfig(), built, { client, store: mockStore() });
     ctx.stop = () => bot.stop();
 
     await bot.start();

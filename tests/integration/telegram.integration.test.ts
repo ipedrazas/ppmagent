@@ -16,6 +16,7 @@ import { PpmClient } from "../../src/memory/ppm.ts";
 import { SessionStore } from "../../src/session/store.ts";
 import { TelegramBot } from "../../src/telegram/bot.ts";
 import type { TelegramClient } from "../../src/telegram/client.ts";
+import { makeTestConfig } from "../support/config.ts";
 
 // Step 5: Telegram run loop + durable session, driven by the faux model and a
 // fake Telegram client (records sent messages). Needs real `ppm`.
@@ -24,29 +25,11 @@ const PROJECT = "onboarding";
 const CHAT = 42;
 
 function testConfig(root: string): Config {
-  return {
-    provider: "anthropic",
-    apiKey: "test-key",
-    model: "faux-1",
+  return makeTestConfig({
     ppmBin: ppmBin ?? "ppm",
     ppmMemoryRoot: root,
-    contextRecent: 5,
-    dbxcliBin: "dbxcli",
-    dbxcliConfig: "",
-    proteosBin: "proteos",
-    proteosUrl: "",
-    proteosWatchIntervalMs: 30_000,
-    telegramBotToken: "test",
-    telegramAllowedChatId: undefined,
     sessionFile: join(root, "session.json"),
-    compactionTokenThreshold: 0,
-    logLevel: "info",
-    logFormat: "json",
-    confirmationGate: true,
-    githubWebhookPort: null,
-    githubWebhookSecret: "",
-    githubMonitoredRepos: [],
-  };
+  });
 }
 
 /** A fake Telegram client that records what the bot sends. */
