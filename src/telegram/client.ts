@@ -5,7 +5,10 @@ import { redact } from "../redact.ts";
 
 export interface InboundMessage {
   chatId: number;
-  text: string;
+  /** Defined for text messages; undefined for non-text (photos, voice notes, edits). */
+  text?: string;
+  /** Set for non-text messages: "photo", "voice", "audio", "video", "sticker", "edit", etc. */
+  nonText?: string;
 }
 
 export interface Update {
@@ -80,7 +83,18 @@ export class TelegramClient {
       description?: string;
       result?: Array<{
         update_id: number;
-        message?: { chat?: { id: number }; text?: string };
+        message?: {
+          chat?: { id: number };
+          text?: string;
+          photo?: unknown;
+          voice?: unknown;
+          audio?: unknown;
+          video?: unknown;
+          sticker?: unknown;
+          document?: unknown;
+          animation?: unknown;
+        };
+        edited_message?: { chat?: { id: number }; text?: string };
       }>;
     };
     if (!body.ok || !body.result) {
@@ -92,12 +106,31 @@ export class TelegramClient {
       throw new Error(`getUpdates failed: ${body.description ?? `ok=${body.ok}`}`);
     }
     return body.result.map((u) => {
-      const chatId = u.message?.chat?.id;
+      const chatId = u.message?.chat?.id ?? u.edited_message?.chat?.id;
+      if (chatId === undefined) return { updateId: u.update_id, message: undefined };
+
       const text = u.message?.text;
-      return {
-        updateId: u.update_id,
-        message: chatId !== undefined && text !== undefined ? { chatId, text } : undefined,
-      };
+      if (text !== undefined) return { updateId: u.update_id, message: { chatId, text } };
+
+      // Non-text or edited message: classify and return so the bot can reply helpfully.
+      const nonText = u.edited_message
+        ? "edit"
+        : u.message?.photo
+          ? "photo"
+          : u.message?.voice
+            ? "voice"
+            : u.message?.audio
+              ? "audio"
+              : u.message?.video
+                ? "video"
+                : u.message?.sticker
+                  ? "sticker"
+                  : u.message?.document
+                    ? "document"
+                    : u.message?.animation
+                      ? "animation"
+                      : "unknown";
+      return { updateId: u.update_id, message: { chatId, nonText } };
     });
   }
 

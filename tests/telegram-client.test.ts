@@ -33,22 +33,70 @@ describe("TelegramClient — token scrubbing", () => {
 });
 
 describe("TelegramClient.getUpdates", () => {
-  test("normalizes text messages and skips non-text updates", async () => {
+  test("normalizes text messages and classifies non-text updates with nonText descriptor", async () => {
     const fetchStub: FetchLike = async () =>
       new Response(
         JSON.stringify({
           ok: true,
           result: [
             { update_id: 5, message: { chat: { id: 42 }, text: "hello" } },
-            { update_id: 6, message: { chat: { id: 42 } } }, // no text
+            { update_id: 6, message: { chat: { id: 42 } } }, // no text, no known type
           ],
         }),
       );
     const updates = await new TelegramClient("token", fetchStub).getUpdates(0);
     expect(updates).toEqual([
       { updateId: 5, message: { chatId: 42, text: "hello" } },
-      { updateId: 6, message: undefined },
+      { updateId: 6, message: { chatId: 42, nonText: "unknown" } },
     ]);
+  });
+
+  test("classifies photo messages with nonText: 'photo'", async () => {
+    const fetchStub: FetchLike = async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          result: [{ update_id: 7, message: { chat: { id: 10 }, photo: [{}] } }],
+        }),
+      );
+    const updates = await new TelegramClient("token", fetchStub).getUpdates(0);
+    expect(updates[0]?.message).toEqual({ chatId: 10, nonText: "photo" });
+  });
+
+  test("classifies voice messages with nonText: 'voice'", async () => {
+    const fetchStub: FetchLike = async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          result: [{ update_id: 8, message: { chat: { id: 11 }, voice: {} } }],
+        }),
+      );
+    const updates = await new TelegramClient("token", fetchStub).getUpdates(0);
+    expect(updates[0]?.message).toEqual({ chatId: 11, nonText: "voice" });
+  });
+
+  test("classifies edited_message updates with nonText: 'edit'", async () => {
+    const fetchStub: FetchLike = async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          result: [{ update_id: 9, edited_message: { chat: { id: 12 }, text: "edited" } }],
+        }),
+      );
+    const updates = await new TelegramClient("token", fetchStub).getUpdates(0);
+    expect(updates[0]?.message).toEqual({ chatId: 12, nonText: "edit" });
+  });
+
+  test("returns message: undefined for updates with no chat id", async () => {
+    const fetchStub: FetchLike = async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          result: [{ update_id: 10 }], // no message field
+        }),
+      );
+    const updates = await new TelegramClient("token", fetchStub).getUpdates(0);
+    expect(updates[0]?.message).toBeUndefined();
   });
 
   test("passes the offset in the request url", async () => {

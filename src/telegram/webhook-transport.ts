@@ -43,9 +43,17 @@ import type { TelegramClient } from "./client.ts";
 interface TelegramUpdate {
   update_id: number;
   message?: {
-    chat: { id: number };
+    chat?: { id: number };
     text?: string;
+    photo?: unknown;
+    voice?: unknown;
+    audio?: unknown;
+    video?: unknown;
+    sticker?: unknown;
+    document?: unknown;
+    animation?: unknown;
   };
+  edited_message?: { chat?: { id: number }; text?: string };
 }
 
 export interface WebhookHandlerOpts {
@@ -53,8 +61,10 @@ export interface WebhookHandlerOpts {
   secretToken?: string;
   /** The single allowed chat id. `undefined` = open to all (PPMA_ALLOW_ANY_CHAT). */
   allowedChatId?: number;
-  /** Called for each valid inbound message. Same contract as TelegramBot.handleMessage(). */
+  /** Called for each valid inbound text message. Same contract as TelegramBot.handleMessage(). */
   handleMessage: (chatId: number, text: string) => Promise<unknown>;
+  /** Called to send a reply (e.g. for non-text message feedback). When absent, non-text messages are silently ignored. */
+  sendMessage?: (chatId: number, text: string) => Promise<void>;
   logger: Logger;
 }
 
@@ -90,25 +100,51 @@ export async function handleWebhookRequest(
   }
 
   const msg = update.message;
-  if (!msg?.text || !msg.chat.id) {
+  const editedMsg = update.edited_message;
+  const chatId = msg?.chat?.id ?? editedMsg?.chat?.id;
+  if (!chatId) {
     return new Response("OK", { status: 200 });
   }
 
-  if (opts.allowedChatId !== undefined && msg.chat.id !== opts.allowedChatId) {
-    opts.logger
-      .withMetadata({ chatId: msg.chat.id })
-      .debug("telegram webhook: ignoring disallowed chat");
+  if (opts.allowedChatId !== undefined && chatId !== opts.allowedChatId) {
+    opts.logger.withMetadata({ chatId }).debug("telegram webhook: ignoring disallowed chat");
+    return new Response("OK", { status: 200 });
+  }
+
+  const text = msg?.text;
+  if (!text) {
+    // Non-text message (photo, voice, edit, etc.) — send a helpful reply when possible.
+    if (opts.sendMessage) {
+      const kind = editedMsg
+        ? "edit"
+        : msg?.photo
+          ? "photo"
+          : msg?.voice
+            ? "voice"
+            : msg?.audio
+              ? "audio"
+              : msg?.video
+                ? "video"
+                : msg?.sticker
+                  ? "sticker"
+                  : "unknown";
+      opts
+        .sendMessage(chatId, `I can only process text messages (received: ${kind}).`)
+        .catch((err) =>
+          opts.logger.withError(err).warn("telegram webhook: error sending non-text reply"),
+        );
+    }
     return new Response("OK", { status: 200 });
   }
 
   // Respond 200 immediately — Telegram considers non-2xx a delivery failure
   // and retries. The handler is fire-and-forget so the response is instant.
   opts
-    .handleMessage(msg.chat.id, msg.text)
+    .handleMessage(chatId, text)
     .catch((err) =>
       opts.logger
         .withError(err)
-        .withMetadata({ updateId: update.update_id, chatId: msg.chat.id })
+        .withMetadata({ updateId: update.update_id, chatId })
         .warn("telegram webhook: error handling message"),
     );
 
@@ -160,6 +196,7 @@ export class TelegramWebhookTransport {
       secretToken: this.opts.secretToken,
       allowedChatId: this.opts.allowedChatId,
       handleMessage: this.opts.handleMessage,
+      sendMessage: (chatId, text) => this.opts.client.sendMessage(chatId, text),
       logger: this.log,
     };
 

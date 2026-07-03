@@ -3,7 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { BuiltAgent } from "../src/agent.ts";
 import type { SessionState, SessionStore } from "../src/session/store.ts";
 import { ChatSession } from "../src/telegram/chat-session.ts";
-import { CommandRouter } from "../src/telegram/command-router.ts";
+import { CommandRouter, parseCommand } from "../src/telegram/command-router.ts";
 import { makeTestConfig } from "./support/config.ts";
 
 function memStore(seed?: SessionState): SessionStore {
@@ -43,6 +43,28 @@ function makeRouter() {
   return { router, session, sent };
 }
 
+describe("parseCommand", () => {
+  test("parses a simple command", () => {
+    expect(parseCommand("/project foo")).toEqual({ cmd: "project", arg: "foo" });
+  });
+
+  test("strips @botname from group chat commands", () => {
+    expect(parseCommand("/project@mybot foo")).toEqual({ cmd: "project", arg: "foo" });
+  });
+
+  test("returns null for non-command text", () => {
+    expect(parseCommand("hello world")).toBeNull();
+  });
+
+  test("handles command with no argument", () => {
+    expect(parseCommand("/help")).toEqual({ cmd: "help", arg: "" });
+  });
+
+  test("handles @botname with no argument", () => {
+    expect(parseCommand("/help@mybot")).toEqual({ cmd: "help", arg: "" });
+  });
+});
+
 describe("CommandRouter.route", () => {
   test("returns null for a non-command message (caller runs it as a turn)", async () => {
     const { router, sent } = makeRouter();
@@ -70,5 +92,23 @@ describe("CommandRouter.route", () => {
     const replies = await router.route(1, "/project");
     expect(replies?.[0]).toContain("Usage: /project");
     expect(session.activeProject).toBeUndefined();
+  });
+
+  test("/project@botname slug (group chat form) sets the active project", async () => {
+    const { router, session } = makeRouter();
+    const replies = await router.route(1, "/project@mybot onboarding");
+    expect(replies?.[0]).toContain("onboarding");
+    expect(session.activeProject).toBe("onboarding");
+  });
+
+  test("/help@botname (group chat form) returns the command list", async () => {
+    const { router } = makeRouter();
+    const replies = await router.route(1, "/help@mybot");
+    expect(replies?.[0]).toContain("Available commands:");
+  });
+
+  test("unknown command in group chat form (/unknown@botname) returns null", async () => {
+    const { router } = makeRouter();
+    expect(await router.route(1, "/unknown@mybot")).toBeNull();
   });
 });
