@@ -1,5 +1,6 @@
 import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";
+import { redactArgs } from "../redact.ts";
 
 /**
  * The uniform envelope every `ppm` command emits on stdout in JSON mode.
@@ -146,11 +147,16 @@ export class PpmClient {
     try {
       envelope = parseEnvelope<T>(result.stdout);
     } catch (error) {
-      this.log.withError(error).withMetadata({ args }).error("ppm output could not be parsed");
+      this.log
+        .withError(error)
+        .withMetadata({ args: redactArgs(args) })
+        .error("ppm output could not be parsed");
       throw error;
     }
     if (!envelope.ok || envelope.data === undefined || envelope.message === undefined) {
-      this.log.withMetadata({ args, error: envelope.error }).warn("ppm returned an error envelope");
+      this.log
+        .withMetadata({ args: redactArgs(args), error: envelope.error })
+        .warn("ppm returned an error envelope");
       throw new PpmError(envelope.error ?? envelope.message ?? "ppm failed", envelope);
     }
     return { ok: true, message: envelope.message, data: envelope.data };

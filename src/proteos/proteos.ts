@@ -1,5 +1,6 @@
 import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";
+import { redactArgs } from "../redact.ts";
 
 export interface ProteosClientOptions {
   /** `proteos` binary (path or name on PATH). */
@@ -125,7 +126,9 @@ export class ProteosClient {
     if (!okCodes.includes(result.exitCode)) {
       const message =
         result.stderr.trim() || result.stdout.trim() || `proteos exited ${result.exitCode}`;
-      this.log.withMetadata({ args, exitCode: result.exitCode }).warn("proteos returned an error");
+      this.log
+        .withMetadata({ args: redactArgs(args), exitCode: result.exitCode })
+        .warn("proteos returned an error");
       throw new ProteosError(message, result.exitCode);
     }
     const out = result.stdout.trim();

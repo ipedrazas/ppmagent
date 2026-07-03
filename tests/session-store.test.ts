@@ -129,6 +129,21 @@ describe("SessionStore — atomic writes", () => {
   });
 });
 
+describe("SessionStore — sanitize hook", () => {
+  test("applies the sanitize function before writing to disk without mutating in-memory state", () => {
+    const store = new SessionStore(join(dir, "sanitize", "session.json"), (v) => {
+      if (typeof v === "object" && v !== null && "name" in v) {
+        return { ...(v as Record<string, unknown>), name: "[REDACTED]" };
+      }
+      return v;
+    });
+    const s = newSession("real-name");
+    store.save(s);
+    expect(s.name).toBe("real-name"); // in-memory state unchanged
+    expect(store.load()?.name).toBe("[REDACTED]"); // on-disk value is sanitized
+  });
+});
+
 describe("newSession", () => {
   test("produces a fresh id, empty transcript, and timestamps", () => {
     const a = newSession();

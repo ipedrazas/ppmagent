@@ -6,6 +6,7 @@ import { PRNotificationStore } from "./github/pr-store.ts";
 import { GitHubWebhookServer } from "./github/webhook-server.ts";
 import { type Logger, createLogger } from "./logger.ts";
 import { ProteosTaskWatcher } from "./proteos/watcher.ts";
+import { redactDeep } from "./redact.ts";
 import { SessionStore } from "./session/store.ts";
 import { TelegramBot } from "./telegram/bot.ts";
 import { TelegramClient } from "./telegram/client.ts";
@@ -98,9 +99,12 @@ async function main(): Promise<void> {
   });
   watcherHolder.watcher = watcher;
 
+  const secrets = [config.telegramBotToken, config.apiKey, config.githubWebhookSecret].filter(
+    Boolean,
+  );
   const bot = new TelegramBot(config, built, {
     client: telegramClient,
-    store: new SessionStore(config.sessionFile),
+    store: new SessionStore(config.sessionFile, (v) => redactDeep(v, secrets)),
     summarize: makeResilientSummarizer(makeModelSummarizer(built.model), logger),
     recorder,
     logger,

@@ -68,7 +68,16 @@ export class SessionStore {
   private readonly pointer: string;
   private readonly offsetFile: string;
 
-  constructor(filePath: string) {
+  /**
+   * @param filePath - Path to the session file (directory is derived from this).
+   * @param sanitize - Optional transform applied to the session state before
+   *   writing to disk. Use to redact secrets from persisted data without
+   *   altering the in-memory state.
+   */
+  constructor(
+    filePath: string,
+    private readonly sanitize?: (v: unknown) => unknown,
+  ) {
     this.legacyFile = filePath;
     this.root = dirname(filePath);
     this.dir = join(this.root, "sessions");
@@ -142,7 +151,8 @@ export class SessionStore {
     state.updatedAt = Date.now();
     const file = this.file(state.sessionId);
     const tmp = `${file}.tmp`;
-    writeFileSync(tmp, JSON.stringify(state, null, 2));
+    const toWrite = this.sanitize ? this.sanitize(state) : state;
+    writeFileSync(tmp, JSON.stringify(toWrite, null, 2));
     renameSync(tmp, file);
     this.setCurrent(state.sessionId);
   }
