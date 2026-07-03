@@ -14,7 +14,7 @@ import { type Logger, nullLogger } from "../logger.ts";
 import { type SessionState, type SessionStore, newSession, shortId } from "../session/store.ts";
 import { type ConfirmationStore, isApproval, isRejection } from "../tools/confirmation.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
-import type { TelegramClient } from "./client.ts";
+import type { InboundMessage, TelegramClient } from "./client.ts";
 import { toMarkdownV2 } from "./mdv2.ts";
 
 /** Full list of available slash commands, one line each. */
@@ -546,68 +546,82 @@ export class TelegramBot {
       for (const update of updates) {
         offset = update.updateId + 1;
         this.deps.store.saveOffset(offset);
-        const message = update.message;
-        if (!message) continue;
-        if (this.allowedChatId !== undefined && message.chatId !== this.allowedChatId) {
-          this.log.withMetadata({ chatId: message.chatId }).debug("ignoring disallowed chat");
-          continue;
-        }
-
-        // /cancel: abort the active turn (if any) and/or clear any pending
-        // confirmation — handled here in the poll loop so it can interrupt an
-        // in-flight turn without waiting for it to finish first.
-        if (message.text.trim() === "/cancel") {
-          const wasCancelled = this.activeTurn !== null;
-          if (wasCancelled) {
-            this.built.agent.abort();
-            await this.activeTurn;
-            this.activeTurn = null;
-          }
-          const hadConfirmation = this.confirmationStore?.hasPending() ?? false;
-          if (hadConfirmation) this.confirmationStore?.clear();
-          const reply =
-            wasCancelled || hadConfirmation ? "Cancelled." : "No active turn to cancel.";
-          this.log
-            .withMetadata({ chatId: message.chatId, wasCancelled, hadConfirmation })
-            .info("cancel command");
-          await this.deps.client.sendMessage(message.chatId, reply).catch(() => {});
-          continue;
-        }
-
-        // If a turn is in flight, wait for it before starting another — the bot
-        // is single-tenant so interleaving turns would corrupt the transcript.
-        if (this.activeTurn) {
-          await this.activeTurn;
-          this.activeTurn = null;
-        }
-
-        // Launch the turn as a background task so the poll loop remains
-        // responsive (e.g. to /cancel) while the agent is processing. A single
-        // failed turn is logged and surfaced to the user, never fatal to the loop.
-        const turn: Promise<void> = this.handleMessage(message.chatId, message.text).then(
-          () => {},
-          (error) => {
-            this.log
-              .withError(error)
-              .withMetadata({ chatId: message.chatId })
-              .error("turn dropped");
-            const msg =
-              error instanceof Error
-                ? `Something went wrong: ${error.message}`
-                : "Something went wrong.";
-            void this.send(message.chatId, [msg]).catch((sendErr) => {
-              this.log.withError(sendErr).error("failed to notify user of turn error");
-            });
-          },
-        );
-        this.activeTurn = turn;
-        void turn.then(() => {
-          if (this.activeTurn === turn) this.activeTurn = null;
-        });
+        if (update.message) await this.dispatchMessage(update.message);
       }
     }
     // Drain any in-flight turn before the process exits.
     if (this.activeTurn) await this.activeTurn;
+  }
+
+  /**
+   * Route one inbound message: enforce the chat allowlist, handle inline control
+   * commands (e.g. `/cancel`, which must interrupt an in-flight turn without
+   * waiting for it), otherwise launch the turn. A new control command is a new
+   * branch here — not an edit to the poll loop in {@link start}.
+   */
+  private async dispatchMessage(message: InboundMessage): Promise<void> {
+    if (this.allowedChatId !== undefined && message.chatId !== this.allowedChatId) {
+      this.log.withMetadata({ chatId: message.chatId }).debug("ignoring disallowed chat");
+      return;
+    }
+
+    if (message.text.trim() === "/cancel") {
+      await this.cancel(message.chatId);
+      return;
+    }
+
+    // Single-tenant: finish any in-flight turn before starting another, else
+    // interleaved turns would corrupt the transcript.
+    if (this.activeTurn) {
+      await this.activeTurn;
+      this.activeTurn = null;
+    }
+    this.launchTurn(message.chatId, message.text);
+  }
+
+  /**
+   * Handle `/cancel`: abort an in-flight turn (if any) and/or clear a pending
+   * confirmation, then acknowledge. Runs in the poll loop so it can interrupt a
+   * turn that is still processing.
+   */
+  private async cancel(chatId: number): Promise<void> {
+    const wasCancelled = this.activeTurn !== null;
+    if (wasCancelled) {
+      this.built.agent.abort();
+      await this.activeTurn;
+      this.activeTurn = null;
+    }
+    const hadConfirmation = this.confirmationStore?.hasPending() ?? false;
+    if (hadConfirmation) this.confirmationStore?.clear();
+    const reply = wasCancelled || hadConfirmation ? "Cancelled." : "No active turn to cancel.";
+    this.log.withMetadata({ chatId, wasCancelled, hadConfirmation }).info("cancel command");
+    await this.deps.client.sendMessage(chatId, reply).catch(() => {});
+  }
+
+  /**
+   * Launch a turn as a background task so the poll loop stays responsive (e.g.
+   * to `/cancel`) while the agent works. A failed turn is logged and surfaced to
+   * the user, never fatal to the loop. Tracks the turn as {@link activeTurn} and
+   * clears it on completion if it is still the current one.
+   */
+  private launchTurn(chatId: number, text: string): void {
+    const turn: Promise<void> = this.handleMessage(chatId, text).then(
+      () => {},
+      (error) => {
+        this.log.withError(error).withMetadata({ chatId }).error("turn dropped");
+        const msg =
+          error instanceof Error
+            ? `Something went wrong: ${error.message}`
+            : "Something went wrong.";
+        void this.send(chatId, [msg]).catch((sendErr) => {
+          this.log.withError(sendErr).error("failed to notify user of turn error");
+        });
+      },
+    );
+    this.activeTurn = turn;
+    void turn.then(() => {
+      if (this.activeTurn === turn) this.activeTurn = null;
+    });
   }
 
   /** Sleep `ms`, resolving early if {@link stop} aborts in the meantime. */
