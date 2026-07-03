@@ -14,6 +14,7 @@ import { maybeCompact, placeholderSummarizer } from "../../src/compaction.ts";
 import type { Config } from "../../src/config.ts";
 import { makeTransformContext } from "../../src/memory/context.ts";
 import { PpmClient } from "../../src/memory/ppm.ts";
+import { makeTestConfig } from "../support/config.ts";
 
 // Step 4: spike claim 4 — after the transcript is compacted, a fact established
 // BEFORE compaction is still recalled, because durable facts live in `ppm` and
@@ -23,29 +24,11 @@ const PROJECT = "onboarding";
 const DECISION = "Ship the email nudge only; defer the dashboard redesign.";
 
 function testConfig(root: string): Config {
-  return {
-    provider: "anthropic",
-    apiKey: "test-key",
-    model: "faux-1",
+  return makeTestConfig({
     ppmBin: ppmBin ?? "ppm",
     ppmMemoryRoot: root,
-    contextRecent: 5,
-    dbxcliBin: "dbxcli",
-    dbxcliConfig: "",
-    proteosBin: "proteos",
-    proteosUrl: "",
-    proteosWatchIntervalMs: 30_000,
-    telegramBotToken: "test",
-    telegramAllowedChatId: undefined,
     sessionFile: join(root, "session.json"),
-    compactionTokenThreshold: 0,
-    logLevel: "info",
-    logFormat: "json",
-    confirmationGate: true,
-    githubWebhookPort: null,
-    githubWebhookSecret: "",
-    githubMonitoredRepos: [],
-  };
+  });
 }
 
 describe.skipIf(!ppmBin)("compaction preserves memory (claim 4)", () => {
