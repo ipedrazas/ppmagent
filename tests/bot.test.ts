@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { BuiltAgent } from "../src/agent.ts";
 import type { SessionStore } from "../src/session/store.ts";
 import { TelegramBot } from "../src/telegram/bot.ts";
+import { ChatSession } from "../src/telegram/chat-session.ts";
 import type { TelegramClient } from "../src/telegram/client.ts";
 import { makeTestConfig } from "./support/config.ts";
 
@@ -52,7 +53,11 @@ describe("TelegramBot.start — failed turn notification", () => {
       proteos: {},
     } as unknown as BuiltAgent;
 
-    const bot = new TelegramBot(makeTestConfig(), built, { client, store: mockStore() });
+    const config = makeTestConfig();
+    const store = mockStore();
+    const session = new ChatSession(config, { store });
+    session.attach(built);
+    const bot = new TelegramBot(config, built, session, { client, store });
     ctx.stop = () => bot.stop();
 
     await bot.start();
@@ -96,7 +101,11 @@ describe("TelegramBot.start — failed turn notification", () => {
       proteos: {},
     } as unknown as BuiltAgent;
 
-    const bot = new TelegramBot(makeTestConfig(), built, { client, store: mockStore() });
+    const config = makeTestConfig();
+    const store = mockStore();
+    const session = new ChatSession(config, { store });
+    session.attach(built);
+    const bot = new TelegramBot(config, built, session, { client, store });
     ctx.stop = () => bot.stop();
 
     await bot.start();
