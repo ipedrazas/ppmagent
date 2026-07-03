@@ -1,6 +1,13 @@
 import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import { redactArgs } from "../redact.ts";
+import {
+  validateArg,
+  validateBranchName,
+  validateFreeText,
+  validateId,
+  validateRepo,
+} from "../sanitize.ts";
 
 export interface ProteosClientOptions {
   /** `proteos` binary (path or name on PATH). */
@@ -144,7 +151,7 @@ export class ProteosClient {
   }
 
   getMachine(id: string, signal?: AbortSignal): Promise<string> {
-    return this.exec(["machines", "get", ...this.flags(), id], signal);
+    return this.exec(["machines", "get", ...this.flags(), validateId(id)], signal);
   }
 
   listTemplates(signal?: AbortSignal): Promise<string> {
@@ -158,12 +165,15 @@ export class ProteosClient {
   // ── Projects (repos cloned on a machine) ──
 
   listProjects(machine: string, signal?: AbortSignal): Promise<string> {
-    return this.exec(["project", "ls", ...this.flags(), "--machine", machine], signal);
+    return this.exec(["project", "ls", ...this.flags(), "--machine", validateId(machine)], signal);
   }
 
   /** Clone owner/repo onto a machine. Async: returns once the clone is dispatched. */
   cloneProject(machine: string, repo: string, signal?: AbortSignal): Promise<string> {
-    return this.exec(["project", "clone", ...this.flags(), "--machine", machine, repo], signal);
+    return this.exec(
+      ["project", "clone", ...this.flags(), "--machine", validateId(machine), validateRepo(repo)],
+      signal,
+    );
   }
 
   /**
@@ -172,20 +182,39 @@ export class ProteosClient {
    * (proteos' own clone wait, default 5m).
    */
   ensureProject(machine: string, repo: string, signal?: AbortSignal): Promise<string> {
-    return this.exec(["project", "ensure", ...this.flags(), "--machine", machine, repo], signal);
+    return this.exec(
+      ["project", "ensure", ...this.flags(), "--machine", validateId(machine), validateRepo(repo)],
+      signal,
+    );
   }
 
   // ── Git (explicit review → commit → push → PR over a task's dirty tree) ──
 
   gitStatus(machine: string, project: string, signal?: AbortSignal): Promise<string> {
     return this.exec(
-      ["git", "status", ...this.flags(), "--machine", machine, "--project", project],
+      [
+        "git",
+        "status",
+        ...this.flags(),
+        "--machine",
+        validateId(machine),
+        "--project",
+        validateArg(project, "project"),
+      ],
       signal,
     );
   }
 
   gitDiff(machine: string, project: string, staged = false, signal?: AbortSignal): Promise<string> {
-    const args = ["git", "diff", ...this.flags(), "--machine", machine, "--project", project];
+    const args = [
+      "git",
+      "diff",
+      ...this.flags(),
+      "--machine",
+      validateId(machine),
+      "--project",
+      validateArg(project, "project"),
+    ];
     if (staged) args.push("--staged");
     return this.exec(args, signal);
   }
@@ -196,13 +225,13 @@ export class ProteosClient {
       "branch",
       ...this.flags(),
       "--machine",
-      input.machine,
+      validateId(input.machine),
       "--project",
-      input.project,
+      validateArg(input.project, "project"),
     ];
-    if (input.from) args.push("--from", input.from);
+    if (input.from) args.push("--from", validateBranchName(input.from));
     if (input.noCheckout) args.push("--no-checkout");
-    args.push(input.name);
+    args.push(validateBranchName(input.name));
     return this.exec(args, signal);
   }
 
@@ -212,11 +241,11 @@ export class ProteosClient {
       "commit",
       ...this.flags(),
       "--machine",
-      input.machine,
+      validateId(input.machine),
       "--project",
-      input.project,
+      validateArg(input.project, "project"),
       "-m",
-      input.message,
+      validateFreeText(input.message, "message"),
     ];
     // `--` guards paths that might begin with a dash from flag parsing.
     if (input.paths && input.paths.length > 0) args.push("--", ...input.paths);
@@ -230,11 +259,11 @@ export class ProteosClient {
       "push",
       ...this.flags(),
       "--machine",
-      input.machine,
+      validateId(input.machine),
       "--project",
-      input.project,
+      validateArg(input.project, "project"),
       "--branch",
-      input.branch,
+      validateBranchName(input.branch),
     ];
     if (input.setUpstream) args.push("--set-upstream");
     return this.exec(args, signal);
@@ -246,16 +275,16 @@ export class ProteosClient {
       "pr",
       ...this.flags(),
       "--machine",
-      input.machine,
+      validateId(input.machine),
       "--project",
-      input.project,
+      validateArg(input.project, "project"),
       "--head",
-      input.head,
+      validateBranchName(input.head),
       "--title",
-      input.title,
+      validateFreeText(input.title, "title"),
     ];
-    if (input.base) args.push("--base", input.base);
-    if (input.body) args.push("--body", input.body);
+    if (input.base) args.push("--base", validateBranchName(input.base));
+    if (input.body) args.push("--body", validateFreeText(input.body, "body"));
     return this.exec(args, signal);
   }
 
@@ -272,25 +301,26 @@ export class ProteosClient {
       "run",
       ...this.flags(),
       "--machine",
-      input.machine,
+      validateId(input.machine),
       "--project",
-      input.project,
+      validateArg(input.project, "project"),
     ];
-    if (input.provider) args.push("--provider", input.provider);
-    args.push("--", input.prompt);
+    if (input.provider) args.push("--provider", validateArg(input.provider, "provider"));
+    args.push("--", validateFreeText(input.prompt, "prompt"));
     return this.exec(args, signal);
   }
 
   tasksList(machine: string, signal?: AbortSignal): Promise<string> {
-    return this.exec(["task", "ls", ...this.flags(), "--machine", machine], signal);
+    return this.exec(["task", "ls", ...this.flags(), "--machine", validateId(machine)], signal);
   }
 
   /** Show one task's status and (when finished) result. Tolerates exit 5 (failed/canceled). */
   taskGet(machine: string, taskId: string, signal?: AbortSignal): Promise<string> {
-    return this.exec(["task", "get", ...this.flags(), "--machine", machine, taskId], signal, [
-      EXIT_OK,
-      EXIT_TASK_FAIL,
-    ]);
+    return this.exec(
+      ["task", "get", ...this.flags(), "--machine", validateId(machine), validateId(taskId)],
+      signal,
+      [EXIT_OK, EXIT_TASK_FAIL],
+    );
   }
 
   /**
@@ -300,20 +330,32 @@ export class ProteosClient {
    */
   taskSend(machine: string, taskId: string, prompt: string, signal?: AbortSignal): Promise<string> {
     return this.exec(
-      ["task", "send", ...this.flags(), "--machine", machine, "--", taskId, prompt],
+      [
+        "task",
+        "send",
+        ...this.flags(),
+        "--machine",
+        validateId(machine),
+        "--",
+        validateId(taskId),
+        validateFreeText(prompt, "prompt"),
+      ],
       signal,
     );
   }
 
   /** Cancel one task. */
   taskCancel(machine: string, taskId: string, signal?: AbortSignal): Promise<string> {
-    return this.exec(["task", "cancel", ...this.flags(), "--machine", machine, taskId], signal);
+    return this.exec(
+      ["task", "cancel", ...this.flags(), "--machine", validateId(machine), validateId(taskId)],
+      signal,
+    );
   }
 
   /** Cancel every running/queued task on a machine. */
   cancelAllTasks(machine: string, signal?: AbortSignal): Promise<string> {
     return this.exec(
-      ["task", "cancel", ...this.flags(), "--machine", machine, "--all-running"],
+      ["task", "cancel", ...this.flags(), "--machine", validateId(machine), "--all-running"],
       signal,
     );
   }
