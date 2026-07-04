@@ -29,6 +29,13 @@ const MUTATING_TOOLS = new Set<string>([
   // memory writes
   "memory_write",
   "memory_create_project",
+  "memory_update_project",
+  // governance writes (memory_standard/memory_initiative also have read actions,
+  // but their writes matter enough to keep the whole tool in the audit trail)
+  "memory_verdict",
+  "memory_waive",
+  "memory_standard",
+  "memory_initiative",
   // proteos mutations (machine lifecycle, clone, run, send, cancel, branch, commit, push, PR)
   "proteos_machine_create",
   "proteos_machine_start",
@@ -58,6 +65,11 @@ Operating rules:
 - Memory holds WHY; the tracker holds WHAT + STATUS. After tracker_create_task or tracker_create_project, record the rationale with memory_write type=task (ref/id + url), never the status.
 - Resolve open questions with memory_write type=question resolve:true once answered.
 - Keep entries atomic and typed. Prefer specific types over note.
+
+Cross-cutting governance (standards, initiatives, audit):
+- The injected context ends with the active project's "cross-cutting obligations". Act on them: judge a \`manual\` standard with memory_verdict (pass/fail + rationale) once you can tell; record a justified exception with memory_waive (the reason is mandatory — never waive to silence a failure).
+- memory_audit runs the compliance matrix across projects; narrow it by tag/project or run an ad-hoc built-in check. Use it to answer "where do we stand" questions instead of reading projects one by one.
+- Declare workspace invariants with memory_standard and cross-project campaigns with memory_initiative; bind a member project to an initiative with its tracker ref. Scope either via project tags (memory_update_project addTags), which is also how you set a project's lifecycle status and tracker link.
 
 Delegating execution to ProteOS (proteos_* tools):
 - ProteOS runs a headless coding agent against a repo cloned in a microVM. Use it to DO the work behind a task (write code, fix a bug), not to track it — the tracker still holds STATUS.
