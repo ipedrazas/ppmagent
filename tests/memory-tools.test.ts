@@ -10,10 +10,16 @@ describe("buildMemoryTools", () => {
       .map((t) => t.name)
       .sort();
     expect(names).toEqual([
+      "memory_audit",
       "memory_create_project",
+      "memory_initiative",
       "memory_list",
       "memory_read",
       "memory_search",
+      "memory_standard",
+      "memory_update_project",
+      "memory_verdict",
+      "memory_waive",
       "memory_write",
     ]);
   });

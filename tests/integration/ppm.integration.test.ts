@@ -190,6 +190,92 @@ describe.skipIf(!ppmBin)("ppm integration", () => {
     });
   });
 
+  describe("cross-cutting governance", () => {
+    beforeAll(async () => {
+      await ppm.projectUpdate({ project: PROJECT, addTags: ["growth"] });
+      await ppm.standard({
+        action: "add",
+        id: "has-owner",
+        title: "Has owner",
+        check: "manual",
+        severity: "warn",
+        appliesTo: "tag:growth",
+        content: "Every growth project names an owner.",
+      });
+      await ppm.initiative({
+        action: "add",
+        id: "q3-activation",
+        title: "Q3 activation push",
+        appliesTo: "tag:growth",
+        content: "Lift activation across growth projects.",
+      });
+    });
+
+    test("audit reports the manual standard as unknown and the initiative as unbound", async () => {
+      const { data } = await ppm.audit({ project: PROJECT });
+      const cells = data.matrix ?? [];
+      const standard = cells.find((c) => c.concern === "has-owner");
+      expect(standard?.status).toBe("unknown");
+      const initiative = cells.find((c) => c.concern === "q3-activation");
+      expect(initiative?.status).toBe("fail");
+    });
+
+    test("context slice carries the obligations", async () => {
+      const env = await ppm.context(PROJECT, 3);
+      expect(env.message).toContain("cross-cutting obligations");
+      expect((env.data.standards ?? []).some((c) => c.concern === "has-owner")).toBe(true);
+      expect((env.data.initiatives ?? []).some((c) => c.concern === "q3-activation")).toBe(true);
+    });
+
+    test("a verdict flips the standard's audit status", async () => {
+      await ppm.verdict({
+        standard: "has-owner",
+        project: PROJECT,
+        status: "pass",
+        content: "Owner is the growth PM.",
+      });
+      const { data } = await ppm.audit({ standard: "has-owner", project: PROJECT });
+      expect(data.matrix?.[0]?.status).toBe("pass");
+    });
+
+    test("binding the initiative flips its audit status", async () => {
+      await ppm.initiative({
+        action: "bind",
+        id: "q3-activation",
+        project: PROJECT,
+        ref: "ENG-500",
+        content: "Onboarding joins the activation push.",
+      });
+      const { data } = await ppm.audit({ initiative: "q3-activation", project: PROJECT });
+      expect(data.matrix?.[0]?.status).toBe("pass");
+      const show = await ppm.initiative({ action: "show", id: "q3-activation" });
+      expect(show.data).toMatchObject({ boundCount: 1 });
+    });
+
+    test("a waived concern reports as waived", async () => {
+      await ppm.standard({
+        action: "add",
+        id: "has-runbook",
+        check: "manual",
+        appliesTo: "tag:growth",
+        content: "Every growth project has a runbook.",
+      });
+      await ppm.waive({
+        concern: "has-runbook",
+        project: PROJECT,
+        reason: "Pure analytics project; nothing to operate.",
+      });
+      const { data } = await ppm.audit({ standard: "has-runbook", project: PROJECT });
+      expect(data.matrix?.[0]?.status).toBe("waived");
+    });
+
+    test("a retired standard drops out of the audit", async () => {
+      await ppm.standard({ action: "retire", id: "has-runbook" });
+      const { data } = await ppm.audit({ project: PROJECT });
+      expect((data.matrix ?? []).some((c) => c.concern === "has-runbook")).toBe(false);
+    });
+  });
+
   describe("memory tools over the real binary", () => {
     test("memory_list (no project) lists projects", async () => {
       const tools = buildMemoryTools(ppm);

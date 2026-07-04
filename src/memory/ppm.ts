@@ -75,6 +75,69 @@ export interface SearchData {
   hits: SearchHit[] | null;
 }
 
+/**
+ * One cell of the compliance matrix: a concern (standard or initiative)
+ * evaluated against one project. Also embedded in the context slice as the
+ * active project's cross-cutting obligations.
+ */
+export interface ConcernCell {
+  concern: string;
+  kind: string;
+  check?: string;
+  severity?: string;
+  project: string;
+  status: string;
+  reason: string;
+}
+
+/** `ppm audit` — the cross-project compliance matrix. */
+export interface AuditData {
+  matrix: ConcernCell[] | null;
+  summary: Record<string, number>;
+}
+
+/** A standard's definition, as returned by `standard add/show/retire`. */
+export interface StandardData {
+  id: string;
+  title: string;
+  appliesTo: string;
+  severity: string;
+  check: string;
+  status: string;
+  body: string;
+  relPath: string;
+}
+
+export interface StandardListData {
+  standards: StandardData[] | null;
+}
+
+/** An initiative's definition, as returned by `initiative add/update`. */
+export interface InitiativeData {
+  id: string;
+  title: string;
+  appliesTo: string;
+  status: string;
+  body: string;
+  relPath: string;
+}
+
+export interface InitiativeListData {
+  initiatives: InitiativeData[] | null;
+}
+
+export interface InitiativeMember {
+  project: string;
+  bound: boolean;
+  task?: string;
+}
+
+/** `ppm initiative show` — the definition plus the per-member bound rollup. */
+export interface InitiativeShowData extends InitiativeData {
+  members: InitiativeMember[] | null;
+  boundCount: number;
+}
+
 /** `ppm context` — the shape-aware slice injected each turn. */
 export interface ContextData {
   project: string;
@@ -87,6 +150,8 @@ export interface ContextData {
   recentDecisions: PpmEntry[];
   shape: ProjectShape;
   otherProjects: ProjectShape[] | null;
+  standards: ConcernCell[] | null;
+  initiatives: ConcernCell[] | null;
 }
 
 /** Raised when `ppm` returns `ok: false` or its output cannot be parsed. */
@@ -204,6 +269,21 @@ export class PpmClient {
     );
   }
 
+  audit(params: AuditParams = {}, signal?: AbortSignal) {
+    return this.run<AuditData>(buildAuditArgs(params), signal);
+  }
+
+  standard(params: StandardParams, signal?: AbortSignal) {
+    return this.run<StandardData | StandardListData>(buildStandardArgs(params), signal);
+  }
+
+  initiative(params: InitiativeParams, signal?: AbortSignal) {
+    return this.run<InitiativeData | InitiativeListData | InitiativeShowData | PpmEntry>(
+      buildInitiativeArgs(params),
+      signal,
+    );
+  }
+
   // ── Write side ──
 
   projectCreate(slug: string, title: string, signal?: AbortSignal) {
@@ -216,6 +296,18 @@ export class PpmClient {
   /** Run a write subcommand (built by {@link buildWriteArgs}); returns the new entry. */
   write(args: string[], signal?: AbortSignal) {
     return this.run<PpmEntry>(args, signal);
+  }
+
+  projectUpdate(params: ProjectUpdateParams, signal?: AbortSignal) {
+    return this.run<PpmEntry>(buildProjectUpdateArgs(params), signal);
+  }
+
+  verdict(params: VerdictParams, signal?: AbortSignal) {
+    return this.run<PpmEntry>(buildVerdictArgs(params), signal);
+  }
+
+  waive(params: WaiveParams, signal?: AbortSignal) {
+    return this.run<PpmEntry>(buildWaiveArgs(params), signal);
   }
 }
 
@@ -296,4 +388,207 @@ export function buildWriteArgs(params: WriteParams): string[] {
         safeContent,
       ];
   }
+}
+
+// ── Cross-cutting (governance) argv builders ─────────────────────────────────
+// Pure and exported, like buildWriteArgs, so each mapping is unit-testable
+// without spawning ppm.
+
+export interface AuditParams {
+  /** Run a single standard by id. */
+  standard?: string;
+  /** Run a single initiative by id. */
+  initiative?: string;
+  /** Ad-hoc built-in check, e.g. has-summary | no-stale-questions:14d. */
+  check?: string;
+  /** Restrict the project axis to this tag. */
+  tag?: string;
+  /** Restrict the project axis to a single project. */
+  project?: string;
+}
+
+export function buildAuditArgs(params: AuditParams): string[] {
+  const args = ["audit"];
+  if (params.standard) args.push("--standard", validateArg(params.standard, "standard id"));
+  if (params.initiative) args.push("--initiative", validateArg(params.initiative, "initiative id"));
+  if (params.check) args.push("--check", validateArg(params.check, "check"));
+  if (params.tag) args.push("--tag", validateArg(params.tag, "tag"));
+  if (params.project) args.push("--project", validateSlug(params.project));
+  return args;
+}
+
+export type StandardAction = "add" | "list" | "show" | "retire";
+
+export interface StandardParams {
+  action: StandardAction;
+  /** Standard id; required for every action except list. */
+  id?: string;
+  /** For add: what the standard requires (the entry body). */
+  content?: string;
+  title?: string;
+  /** For add: built-in check id, or 'manual' for agent-judged (ppm default). */
+  check?: string;
+  severity?: "info" | "warn" | "block";
+  /** For add: all | tag:<t> | comma-separated slugs (ppm default: all). */
+  appliesTo?: string;
+}
+
+export function buildStandardArgs(params: StandardParams): string[] {
+  const { action, id, content, title, check, severity, appliesTo } = params;
+  if (action === "list") return ["standard", "list"];
+  if (!id) throw new PpmError(`standard ${action} requires \`id\``);
+  const safeId = validateArg(id, "standard id");
+  switch (action) {
+    case "show":
+      return ["standard", "show", safeId];
+    case "retire":
+      return ["standard", "retire", safeId];
+    case "add": {
+      if (!content) throw new PpmError("standard add requires `content`");
+      return [
+        "standard",
+        "add",
+        safeId,
+        "--content",
+        validateFreeText(content, "content"),
+        ...(title ? ["--title", validateFreeText(title, "title")] : []),
+        ...(check ? ["--check", validateArg(check, "check")] : []),
+        ...(severity ? ["--severity", validateArg(severity, "severity")] : []),
+        ...(appliesTo ? ["--applies-to", validateArg(appliesTo, "applies-to")] : []),
+      ];
+    }
+  }
+}
+
+export type InitiativeAction = "add" | "bind" | "list" | "show" | "update";
+
+export interface InitiativeParams {
+  action: InitiativeAction;
+  /** Initiative id; required for every action except list. */
+  id?: string;
+  /** For add: the campaign's intent (the entry body). For bind: the member task's rationale. */
+  content?: string;
+  title?: string;
+  /** For add: all | tag:<t> | comma-separated slugs (ppm default: all). */
+  appliesTo?: string;
+  /** For update. */
+  status?: "active" | "paused" | "done";
+  /** For bind: the project to bind. */
+  project?: string;
+  /** For bind: tracker reference for the member task, e.g. ENG-411. */
+  ref?: string;
+  /** For bind: tracker URL. */
+  url?: string;
+}
+
+export function buildInitiativeArgs(params: InitiativeParams): string[] {
+  const { action, id, content, title, appliesTo, status, project, ref, url } = params;
+  if (action === "list") return ["initiative", "list"];
+  if (!id) throw new PpmError(`initiative ${action} requires \`id\``);
+  const safeId = validateArg(id, "initiative id");
+  switch (action) {
+    case "show":
+      return ["initiative", "show", safeId];
+    case "add": {
+      if (!content) throw new PpmError("initiative add requires `content`");
+      return [
+        "initiative",
+        "add",
+        safeId,
+        "--content",
+        validateFreeText(content, "content"),
+        ...(title ? ["--title", validateFreeText(title, "title")] : []),
+        ...(appliesTo ? ["--applies-to", validateArg(appliesTo, "applies-to")] : []),
+      ];
+    }
+    case "update": {
+      if (!status) throw new PpmError("initiative update requires `status`");
+      return ["initiative", "update", safeId, "--status", validateArg(status, "status")];
+    }
+    case "bind": {
+      if (!project) throw new PpmError("initiative bind requires `project`");
+      if (!ref) throw new PpmError("initiative bind requires `ref`");
+      if (!content) throw new PpmError("initiative bind requires `content`");
+      return [
+        "initiative",
+        "bind",
+        safeId,
+        validateSlug(project),
+        "--ref",
+        validateRef(ref),
+        ...(url ? ["--url", validateFreeText(url, "url")] : []),
+        "--content",
+        validateFreeText(content, "content"),
+      ];
+    }
+  }
+}
+
+export interface VerdictParams {
+  /** The manual standard being judged. */
+  standard: string;
+  project: string;
+  status: "pass" | "fail";
+  /** The rationale behind the judgement. */
+  content: string;
+}
+
+export function buildVerdictArgs(params: VerdictParams): string[] {
+  return [
+    "verdict",
+    validateArg(params.standard, "standard id"),
+    validateSlug(params.project),
+    "--status",
+    validateArg(params.status, "status"),
+    "--content",
+    validateFreeText(params.content, "content"),
+  ];
+}
+
+export interface WaiveParams {
+  /** The concern (standard or initiative id) being waived. */
+  concern: string;
+  project: string;
+  /** The reason for the exception — required by design. */
+  reason: string;
+}
+
+export function buildWaiveArgs(params: WaiveParams): string[] {
+  return [
+    "waive",
+    validateArg(params.concern, "concern id"),
+    validateSlug(params.project),
+    "--content",
+    validateFreeText(params.reason, "reason"),
+  ];
+}
+
+export interface ProjectUpdateParams {
+  project: string;
+  status?: "active" | "paused" | "done" | "archived";
+  title?: string;
+  /** Tags to add; drive tag:<t> concern scoping. */
+  addTags?: string[];
+  /** Tags to remove. */
+  removeTags?: string[];
+  /** Tracker system, e.g. linear|jira. */
+  trackerSystem?: string;
+  trackerProject?: string;
+  trackerUrl?: string;
+}
+
+export function buildProjectUpdateArgs(params: ProjectUpdateParams): string[] {
+  const { project, status, title, addTags, removeTags, trackerSystem, trackerProject, trackerUrl } =
+    params;
+  const args = ["project", "update", validateSlug(project)];
+  if (status) args.push("--status", validateArg(status, "status"));
+  if (title) args.push("--title", validateFreeText(title, "title"));
+  for (const tag of addTags ?? []) args.push("--tag", validateArg(tag, "tag"));
+  for (const tag of removeTags ?? []) args.push("--untag", validateArg(tag, "tag"));
+  if (trackerSystem) args.push("--tracker-system", validateArg(trackerSystem, "tracker system"));
+  if (trackerProject)
+    args.push("--tracker-project", validateFreeText(trackerProject, "tracker project"));
+  if (trackerUrl) args.push("--tracker-url", validateFreeText(trackerUrl, "tracker url"));
+  if (args.length === 3) throw new PpmError("project update requires at least one field to change");
+  return args;
 }
