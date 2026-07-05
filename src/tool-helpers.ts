@@ -3,7 +3,7 @@ import type {
   AgentToolResult,
   AgentToolUpdateCallback,
 } from "@earendil-works/pi-agent-core";
-import type { Static, TSchema, TextContent } from "@earendil-works/pi-ai";
+import type { Static, TextContent, TSchema } from "@earendil-works/pi-ai";
 
 /** Wrap a string as a pi TextContent block. */
 export function text(s: string): TextContent {

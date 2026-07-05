@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Logger } from "../logger.ts";
-import { type GitHubPRPayload, type PRHandlerDeps, handlePREvent } from "./pr-handler.ts";
+import { type GitHubPRPayload, handlePREvent, type PRHandlerDeps } from "./pr-handler.ts";
 
 export interface WebhookServerOptions {
   port: number;

@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  PpmError,
   buildAuditArgs,
   buildInitiativeArgs,
   buildProjectUpdateArgs,
@@ -8,6 +7,7 @@ import {
   buildVerdictArgs,
   buildWaiveArgs,
   buildWriteArgs,
+  PpmError,
   parseEnvelope,
 } from "../src/memory/ppm.ts";
 

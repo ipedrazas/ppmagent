@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { SessionIndex } from "../src/session/session-index.ts";
-import { SessionStore, newSession } from "../src/session/store.ts";
+import { newSession, SessionStore } from "../src/session/store.ts";
 
 const dir = mkdtempSync(join(import.meta.dir, ".idx-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));

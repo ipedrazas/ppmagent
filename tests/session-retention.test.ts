@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionRetentionRunner } from "../src/session/retention.ts";
 import { SessionIndex } from "../src/session/session-index.ts";
-import { SessionStore, newSession } from "../src/session/store.ts";
+import { newSession, SessionStore } from "../src/session/store.ts";
 
 const dir = mkdtempSync(join(import.meta.dir, ".retention-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));

@@ -9,7 +9,7 @@
  * With no path arguments it reads ./.session/traces/*.jsonl.
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { TraceEvent } from "./recorder.ts";
 

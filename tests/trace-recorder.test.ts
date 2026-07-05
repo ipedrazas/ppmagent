@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { MAX_PAYLOAD_CHARS, TraceRecorder, clipPayload } from "../src/trace/recorder.ts";
+import { clipPayload, MAX_PAYLOAD_CHARS, TraceRecorder } from "../src/trace/recorder.ts";
 
 describe("clipPayload", () => {
   test("passes small values through untouched", () => {
