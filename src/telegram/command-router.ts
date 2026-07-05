@@ -4,7 +4,7 @@
  * runs it as an agent turn). Extracted from {@link TelegramBot} so adding a
  * command is a change here, not in the transport/poll loop.
  */
-import { DEFAULT_KEEP_RECENT, contextTokens } from "../compaction.ts";
+import { contextTokens, DEFAULT_KEEP_RECENT } from "../compaction.ts";
 import type { Config } from "../config.ts";
 import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";

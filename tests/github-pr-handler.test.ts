@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { PRHandlerDeps } from "../src/github/pr-handler.ts";
 import {
-  type GitHubPRPayload,
   formatPRNotification,
+  type GitHubPRPayload,
   handlePREvent,
   matchesMonitoredRepo,
 } from "../src/github/pr-handler.ts";

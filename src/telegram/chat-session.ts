@@ -13,18 +13,18 @@
 import type { BuiltAgent } from "../agent.ts";
 import {
   type CompactionOutcome,
-  DEFAULT_KEEP_RECENT,
-  type Summarizer,
   contextTokens,
+  DEFAULT_KEEP_RECENT,
   maybeCompact,
   placeholderSummarizer,
   resolveThreshold,
+  type Summarizer,
 } from "../compaction.ts";
 import type { Config } from "../config.ts";
 import type { Logger } from "../logger.ts";
 import type { MetricsCollector } from "../metrics/collector.ts";
 import type { SessionIndex } from "../session/session-index.ts";
-import { type SessionState, type SessionStore, newSession, shortId } from "../session/store.ts";
+import { newSession, type SessionState, type SessionStore, shortId } from "../session/store.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
 
 /** One-line label for a session in listings: `<short> "name" — N msgs, project`. */

@@ -1,10 +1,10 @@
 import { dirname, join } from "node:path";
 import { buildAgent } from "./agent.ts";
-import { type Summarizer, makeModelSummarizer, placeholderSummarizer } from "./compaction.ts";
+import { makeModelSummarizer, placeholderSummarizer, type Summarizer } from "./compaction.ts";
 import { loadConfig } from "./config.ts";
 import { PRNotificationStore } from "./github/pr-store.ts";
 import { GitHubWebhookServer } from "./github/webhook-server.ts";
-import { type Logger, createLogger } from "./logger.ts";
+import { createLogger, type Logger } from "./logger.ts";
 import { MetricsCollector } from "./metrics/collector.ts";
 import { MetricsServer } from "./metrics/server.ts";
 import { runPreflightChecks } from "./preflight.ts";

@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { SessionStore, newSession, shortId } from "../src/session/store.ts";
+import { newSession, SessionStore, shortId } from "../src/session/store.ts";
 
 const dir = mkdtempSync(join(import.meta.dir, ".sessroot-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));

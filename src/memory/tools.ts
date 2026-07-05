@@ -1,7 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, toolResult } from "../tool-helpers.ts";
-import { type PpmClient, buildWriteArgs } from "./ppm.ts";
+import { buildWriteArgs, type PpmClient } from "./ppm.ts";
 
 /**
  * The closed set of writable entry types. Enforced in the tool schema so the

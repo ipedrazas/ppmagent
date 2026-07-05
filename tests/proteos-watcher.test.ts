@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProteosClient } from "../src/proteos/proteos.ts";
 import { WatchedTasksStore } from "../src/proteos/watched-store.ts";
-import { ProteosTaskWatcher, extractTaskId, parseTaskStatus } from "../src/proteos/watcher.ts";
+import { extractTaskId, ProteosTaskWatcher, parseTaskStatus } from "../src/proteos/watcher.ts";
 
 describe("extractTaskId", () => {
   test("extracts a numeric task id", () => {

@@ -51,7 +51,7 @@ export class TelegramBot {
   private readonly turnRunner: TurnRunner;
 
   constructor(
-    private readonly config: Config,
+    config: Config,
     private readonly built: BuiltAgent,
     /** Per-chat session state; must already be {@link ChatSession.attach}ed. */
     private readonly session: ChatSession,

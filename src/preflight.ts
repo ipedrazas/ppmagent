@@ -26,7 +26,7 @@ async function probeCli(bin: string, args: string[], logger: Logger): Promise<Cl
   try {
     const { stdout, stderr } = await execCommand(bin, args, { logger });
     const output = (stdout + stderr).trim();
-    const match = output.match(/\b(\d+\.\d+[\.\d]*)\b/);
+    const match = output.match(/\b(\d+\.\d+[.\d]*)\b/);
     return { available: true, version: match?.[1] };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

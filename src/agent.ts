@@ -11,7 +11,7 @@ import { ProteosClient } from "./proteos/proteos.ts";
 import { buildProteosTools } from "./proteos/tools.ts";
 import { buildAskUserTool } from "./tools/ask-user.ts";
 import type { ConfirmationStore } from "./tools/confirmation.ts";
-import { type TraceRecorder, clipPayload } from "./trace/recorder.ts";
+import { clipPayload, type TraceRecorder } from "./trace/recorder.ts";
 import { DataboxClient } from "./tracker/databox.ts";
 import { buildTrackerTools } from "./tracker/tools.ts";
 

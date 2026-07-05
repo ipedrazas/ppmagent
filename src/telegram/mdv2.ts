@@ -8,7 +8,7 @@
  */
 
 /** Special chars that must be backslash-escaped in regular MarkdownV2 prose. */
-const PROSE_RE = /([_*\[\]()~`>#+=|{}.!\\-])/g;
+const PROSE_RE = /([_*[\]()~`>#+=|{}.!\\-])/g;
 
 /** Special chars that must be backslash-escaped inside a code span or block. */
 const CODE_RE = /([`\\])/g;
