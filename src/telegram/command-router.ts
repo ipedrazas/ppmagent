@@ -8,6 +8,8 @@ import { contextTokens, DEFAULT_KEEP_RECENT } from "../compaction.ts";
 import type { Config } from "../config.ts";
 import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";
+import { formatDueAt } from "../reminder/parse.ts";
+import type { ReminderStore } from "../reminder/store.ts";
 import type { SessionIndex } from "../session/session-index.ts";
 import { shortId } from "../session/store.ts";
 import type { ConfirmationStore } from "../tools/confirmation.ts";
@@ -38,6 +40,8 @@ function helpText(): string {
     "/tools — report CLI tool versions",
     "/resume [id|name] — list or switch sessions",
     "/search [query] — search saved sessions (project:<slug> or name fragment)",
+    "/reminders — list pending reminders",
+    "/reminders cancel <id> — cancel a reminder",
     "/cancel — cancel an in-flight turn",
     "/help — show this message",
   ].join("\n");
@@ -54,6 +58,8 @@ export interface CommandRouterDeps {
   recorder?: TraceRecorder;
   /** Session index for the `/search` command. Absent = search unavailable. */
   index?: SessionIndex;
+  /** When set, `/reminders` lists and cancels pending reminders. */
+  reminderStore?: ReminderStore;
   logger?: Logger;
 }
 
@@ -153,6 +159,10 @@ export class CommandRouter {
       return this.reply(chatId, this.searchSessions(arg));
     }
 
+    if (cmd === "reminders") {
+      return this.reply(chatId, this.remindersCommand(arg));
+    }
+
     if (cmd === "cancel") {
       // When called from the poll loop while a turn is active, the poll loop
       // aborts the agent before routing here. This branch handles the direct
@@ -173,6 +183,31 @@ export class CommandRouter {
   private async reply(chatId: number, text: string): Promise<string[]> {
     await this.deps.send(chatId, [text]);
     return [text];
+  }
+
+  /**
+   * Handle `/reminders [cancel <id>]`.
+   * With no arg: list pending reminders.
+   * With "cancel <id>": remove the identified reminder.
+   */
+  private remindersCommand(arg: string): string {
+    const { reminderStore } = this.deps;
+    if (!reminderStore) return "Reminders are not configured.";
+
+    if (arg) {
+      const cancelMatch = arg.match(/^cancel\s+(\S+)$/i);
+      if (cancelMatch?.[1]) {
+        const id = cancelMatch[1];
+        const removed = reminderStore.remove(id);
+        return removed ? `Reminder ${id} cancelled.` : `No reminder found with id "${id}".`;
+      }
+      return "Usage: /reminders or /reminders cancel <id>";
+    }
+
+    const reminders = reminderStore.list();
+    if (reminders.length === 0) return "No pending reminders.";
+    const lines = reminders.map((r) => `• [${r.id}] ${formatDueAt(r.dueAt)} — ${r.message}`);
+    return `Pending reminders (${reminders.length}):\n${lines.join("\n")}`;
   }
 
   /**

@@ -9,6 +9,8 @@ import { buildMemoryTools } from "./memory/tools.ts";
 import type { MetricsCollector } from "./metrics/collector.ts";
 import { ProteosClient } from "./proteos/proteos.ts";
 import { buildProteosTools } from "./proteos/tools.ts";
+import type { ReminderStore } from "./reminder/store.ts";
+import { buildReminderTools } from "./reminder/tools.ts";
 import { buildAskUserTool } from "./tools/ask-user.ts";
 import type { ConfirmationStore } from "./tools/confirmation.ts";
 import { clipPayload, type TraceRecorder } from "./trace/recorder.ts";
@@ -75,7 +77,12 @@ Delegating execution to ProteOS (proteos_* tools):
 - ProteOS runs a headless coding agent against a repo cloned in a microVM. Use it to DO the work behind a task (write code, fix a bug), not to track it — the tracker still holds STATUS.
 - Flow: proteos_machines_list to get a machine id → proteos_project_ensure the repo onto it → proteos_task_run with a clear prompt. If no suitable machine exists, create one from a template (proteos_templates_list → proteos_machine_create — it provisions billable compute, so the user must confirm); if a machine is stopped, proteos_machine_start it. task_run returns a task id immediately and does NOT wait; report the id and poll with proteos_task_get rather than blocking. Every proteos call takes the machine id explicitly; task/git/project calls also take the project (the repo's workspace directory name).
 - To land the work: review with proteos_git_status/proteos_git_diff, then proteos_git_branch, proteos_git_commit, proteos_git_push (setUpstream on a new branch), and proteos_git_pr. The task agent never commits on its own — that is the explicit gate.
-- After dispatching or landing work for a tracker task, record the link (task id / PR url) in memory with memory_write, never the live status.`;
+- After dispatching or landing work for a tracker task, record the link (task id / PR url) in memory with memory_write, never the live status.
+
+Reminders (reminder_* tools):
+- When the user says "remind me [time] about X" or "remind me to X [time]", call reminder_create with their message and when.
+- The \`when\` field accepts natural language: "tomorrow", "in 2 hours", "at 3pm", "next Monday", "in 30 minutes", or an ISO 8601 datetime.
+- To show pending reminders call reminder_list; to cancel one call reminder_cancel with its id.`;
 
 /**
  * Resolve a model from a provider id + model id. `getBuiltinModel` is strongly
@@ -115,6 +122,8 @@ export interface BuildAgentOverrides {
   onTaskDispatched?: (machine: string, taskId: string, project: string, label: string) => void;
   /** When set, push/PR and tracker mutations require confirmation before executing. */
   confirmationStore?: ConfirmationStore;
+  /** When set, reminder_* tools are available for scheduling personal reminders. */
+  reminderStore?: ReminderStore;
 }
 
 /**
@@ -208,6 +217,7 @@ export function buildAgent(
       onTaskDispatched: overrides.onTaskDispatched,
       confirmationStore: overrides.confirmationStore,
     }),
+    ...(overrides.reminderStore ? buildReminderTools(overrides.reminderStore) : []),
     buildAskUserTool(ppm),
   ];
 
