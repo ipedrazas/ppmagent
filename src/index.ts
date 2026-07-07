@@ -10,6 +10,8 @@ import { MetricsServer } from "./metrics/server.ts";
 import { runPreflightChecks } from "./preflight.ts";
 import { ProteosTaskWatcher } from "./proteos/watcher.ts";
 import { redactDeep } from "./redact.ts";
+import { ReminderRunner } from "./reminder/runner.ts";
+import { ReminderStore } from "./reminder/store.ts";
 import { SessionRetentionRunner } from "./session/retention.ts";
 import { SessionIndex } from "./session/session-index.ts";
 import { SessionStore } from "./session/store.ts";
@@ -102,11 +104,18 @@ async function main(): Promise<void> {
     logger,
     index: sessionIndex,
   });
+  // reminderStore must be created before buildAgent so the reminder tools can reference it.
+  // The store file lives beside the other session-adjacent state files.
+  const reminderStore = new ReminderStore(
+    join(dirname(config.sessionFile), "reminders.json"),
+  );
+
   const built = buildAgent(config, () => session.activeProject, {
     logger,
     recorder,
     metrics,
     confirmationStore,
+    reminderStore,
     onTaskDispatched: (machine, taskId, project, label) =>
       watcherHolder.watcher?.watch(machine, taskId, project, label),
   });
@@ -155,6 +164,16 @@ async function main(): Promise<void> {
   });
   watcherHolder.watcher = watcher;
 
+  const reminderRunner = new ReminderRunner({
+    store: reminderStore,
+    notify: async (msg) => {
+      if (config.telegramAllowedChatId !== undefined) {
+        await telegramClient.sendMessage(config.telegramAllowedChatId, msg);
+      }
+    },
+    logger,
+  });
+
   const bot = new TelegramBot(config, built, session, {
     client: telegramClient,
     store,
@@ -163,6 +182,7 @@ async function main(): Promise<void> {
     logger,
     confirmationStore,
     index: sessionIndex,
+    reminderStore,
   });
 
   const retentionRunner = new SessionRetentionRunner({
@@ -206,6 +226,7 @@ async function main(): Promise<void> {
     bot.stop();
     watcher.stop();
     retentionRunner.stop();
+    reminderRunner.stop();
     webhookServer?.stop();
     metricsServer?.stop();
     webhookTransport?.stop();
@@ -214,7 +235,7 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
 
   const telegramTransport = webhookTransport ? webhookTransport.start() : bot.start();
-  await Promise.all([telegramTransport, watcher.start(), retentionRunner.start()]);
+  await Promise.all([telegramTransport, watcher.start(), retentionRunner.start(), reminderRunner.start()]);
   logger.info("ppmagent stopped");
 }
 

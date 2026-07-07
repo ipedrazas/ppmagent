@@ -2,6 +2,7 @@ import type { BuiltAgent } from "../agent.ts";
 import type { Config } from "../config.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import type { MetricsCollector } from "../metrics/collector.ts";
+import type { ReminderStore } from "../reminder/store.ts";
 import type { SessionIndex } from "../session/session-index.ts";
 import type { SessionStore } from "../session/store.ts";
 import type { ConfirmationStore } from "../tools/confirmation.ts";
@@ -26,6 +27,8 @@ export interface TelegramBotDeps {
   confirmationStore?: ConfirmationStore;
   /** Session index for the `/search` command. Absent = search unavailable. */
   index?: SessionIndex;
+  /** When set, enables the /reminders command and reminder_* agent tools. */
+  reminderStore?: ReminderStore;
 }
 
 /**
@@ -71,6 +74,7 @@ export class TelegramBot {
       confirmationStore: deps.confirmationStore,
       recorder: deps.recorder,
       index: deps.index,
+      reminderStore: deps.reminderStore,
       logger: deps.logger,
     });
     this.turnRunner = new TurnRunner({
