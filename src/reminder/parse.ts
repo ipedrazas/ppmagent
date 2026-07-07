@@ -20,7 +20,7 @@ function parseClock(s: string): { h: number; m: number } | null {
   // "3pm" / "3am"
   const simple = s.match(/^(\d{1,2})(am|pm)$/);
   if (simple) {
-    let h = parseInt(simple[1], 10);
+    let h = parseInt(simple[1]!, 10);
     const pm = simple[2] === "pm";
     if (h < 1 || h > 12) return null;
     if (pm && h !== 12) h += 12;
@@ -30,8 +30,8 @@ function parseClock(s: string): { h: number; m: number } | null {
   // "3:30pm" / "3:30am"
   const withMin = s.match(/^(\d{1,2}):(\d{2})(am|pm)$/);
   if (withMin) {
-    let h = parseInt(withMin[1], 10);
-    const m = parseInt(withMin[2], 10);
+    let h = parseInt(withMin[1]!, 10);
+    const m = parseInt(withMin[2]!, 10);
     const pm = withMin[3] === "pm";
     if (h < 1 || h > 12 || m > 59) return null;
     if (pm && h !== 12) h += 12;
@@ -41,8 +41,8 @@ function parseClock(s: string): { h: number; m: number } | null {
   // "15:30" (24-hour)
   const h24 = s.match(/^(\d{1,2}):(\d{2})$/);
   if (h24) {
-    const h = parseInt(h24[1], 10);
-    const m = parseInt(h24[2], 10);
+    const h = parseInt(h24[1]!, 10);
+    const m = parseInt(h24[2]!, 10);
     if (h > 23 || m > 59) return null;
     return { h, m };
   }
@@ -89,18 +89,16 @@ export function parseWhen(when: string, now: number = Date.now()): number | null
   // "2025-07-08T09:00:00" or "2025-07-08" (treat date-only as 09:00 local)
   const isoDateTime = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?/.test(trimmed);
   if (isoDateTime) {
-    const parsed = Date.parse(trimmed.includes("T") ? trimmed : trimmed + "T09:00:00");
-    if (!isNaN(parsed)) return parsed;
+    const parsed = Date.parse(trimmed.includes("T") ? trimmed : `${trimmed}T09:00:00`);
+    if (!Number.isNaN(parsed)) return parsed;
   }
 
   // ── Relative offsets: "in N unit" ─────────────────────────────────────────
-  const inMatch = lower.match(
-    /^in\s+(\d+)\s*(minutes?|mins?|hours?|hrs?|days?|weeks?)$/,
-  );
+  const inMatch = lower.match(/^in\s+(\d+)\s*(minutes?|mins?|hours?|hrs?|days?|weeks?)$/);
   if (inMatch) {
-    const n = parseInt(inMatch[1], 10);
-    const unit = inMatch[2];
-    if (/^min|^min/.test(unit)) return now + n * 60_000;
+    const n = parseInt(inMatch[1]!, 10);
+    const unit = inMatch[2]!;
+    if (/^min/.test(unit)) return now + n * 60_000;
     if (/^hr|^hour/.test(unit)) return now + n * 3_600_000;
     if (/^day/.test(unit)) return now + n * 86_400_000;
     if (/^week/.test(unit)) return now + n * 7 * 86_400_000;
@@ -111,18 +109,13 @@ export function parseWhen(when: string, now: number = Date.now()): number | null
 
   const tomorrowAt_match = lower.match(/^tomorrow\s+at\s+(.+)$/);
   if (tomorrowAt_match) {
-    const clock = parseClock(tomorrowAt_match[1]);
+    const clock = parseClock(tomorrowAt_match[1]!);
     if (clock) return tomorrowAt(ref, clock.h, clock.m);
   }
 
-  const tomorrowMorning = lower.match(/^tomorrow\s+(morning)$/);
-  if (tomorrowMorning) return tomorrowAt(ref, 9, 0);
-
-  const tomorrowAfternoon = lower.match(/^tomorrow\s+(afternoon)$/);
-  if (tomorrowAfternoon) return tomorrowAt(ref, 15, 0);
-
-  const tomorrowEvening = lower.match(/^tomorrow\s+(evening)$/);
-  if (tomorrowEvening) return tomorrowAt(ref, 19, 0);
+  if (lower === "tomorrow morning") return tomorrowAt(ref, 9, 0);
+  if (lower === "tomorrow afternoon") return tomorrowAt(ref, 15, 0);
+  if (lower === "tomorrow evening") return tomorrowAt(ref, 19, 0);
 
   // ── Named moment: today shortcuts ─────────────────────────────────────────
   if (lower === "tonight" || lower === "this evening") return nextClockToday(ref, 20, 0, now);
@@ -132,14 +125,14 @@ export function parseWhen(when: string, now: number = Date.now()): number | null
   // ── "at <time>" ───────────────────────────────────────────────────────────
   const atMatch = lower.match(/^at\s+(.+)$/);
   if (atMatch) {
-    const clock = parseClock(atMatch[1]);
+    const clock = parseClock(atMatch[1]!);
     if (clock) return nextClockToday(ref, clock.h, clock.m, now);
   }
 
   // ── Weekday names ("next Monday", "Friday") ───────────────────────────────
   const weekdayMatch = lower.match(/^(?:next\s+)?(\w+)(?:\s+at\s+(.+))?$/);
   if (weekdayMatch) {
-    const dayName = weekdayMatch[1];
+    const dayName = weekdayMatch[1]!;
     const dayIdx = WEEKDAYS.indexOf(dayName);
     if (dayIdx !== -1) {
       const clock = weekdayMatch[2] ? parseClock(weekdayMatch[2]) : null;

@@ -106,9 +106,7 @@ async function main(): Promise<void> {
   });
   // reminderStore must be created before buildAgent so the reminder tools can reference it.
   // The store file lives beside the other session-adjacent state files.
-  const reminderStore = new ReminderStore(
-    join(dirname(config.sessionFile), "reminders.json"),
-  );
+  const reminderStore = new ReminderStore(join(dirname(config.sessionFile), "reminders.json"));
 
   const built = buildAgent(config, () => session.activeProject, {
     logger,
@@ -235,7 +233,12 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
 
   const telegramTransport = webhookTransport ? webhookTransport.start() : bot.start();
-  await Promise.all([telegramTransport, watcher.start(), retentionRunner.start(), reminderRunner.start()]);
+  await Promise.all([
+    telegramTransport,
+    watcher.start(),
+    retentionRunner.start(),
+    reminderRunner.start(),
+  ]);
   logger.info("ppmagent stopped");
 }
 

@@ -16,9 +16,9 @@ export function buildReminderTools(store: ReminderStore): AgentTool[] {
     name: "reminder_create",
     description:
       "Set a reminder that fires a Telegram message at a specified time. " +
-      "The `when` field accepts natural language (e.g. \"tomorrow\", \"in 2 hours\", " +
-      "\"at 3pm\", \"next Monday\", \"tomorrow at 9am\") or an ISO 8601 datetime " +
-      "(e.g. \"2025-07-08T09:00:00\"). Times are relative to the server's local clock.",
+      'The `when` field accepts natural language (e.g. "tomorrow", "in 2 hours", ' +
+      '"at 3pm", "next Monday", "tomorrow at 9am") or an ISO 8601 datetime ' +
+      '(e.g. "2025-07-08T09:00:00"). Times are relative to the server\'s local clock.',
     label: "Create reminder",
     parameters: Type.Object({
       message: Type.String({ description: "The reminder text to send when it fires." }),
@@ -57,9 +57,7 @@ export function buildReminderTools(store: ReminderStore): AgentTool[] {
       if (reminders.length === 0) {
         return toolResult("No pending reminders.", reminders);
       }
-      const lines = reminders.map(
-        (r) => `• [${r.id}] ${formatDueAt(r.dueAt)} — ${r.message}`,
-      );
+      const lines = reminders.map((r) => `• [${r.id}] ${formatDueAt(r.dueAt)} — ${r.message}`);
       return toolResult(`Pending reminders (${reminders.length}):\n${lines.join("\n")}`, reminders);
     },
   });

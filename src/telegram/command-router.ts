@@ -201,7 +201,7 @@ export class CommandRouter {
         const removed = reminderStore.remove(id);
         return removed ? `Reminder ${id} cancelled.` : `No reminder found with id "${id}".`;
       }
-      return 'Usage: /reminders or /reminders cancel <id>';
+      return "Usage: /reminders or /reminders cancel <id>";
     }
 
     const reminders = reminderStore.list();
