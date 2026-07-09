@@ -196,4 +196,33 @@ describe("loadConfig", () => {
     const config = loadConfig({ ...base, GITHUB_TOKEN: "ghp_testtoken123" });
     expect(config.githubToken).toBe("ghp_testtoken123");
   });
+
+  test("selects ollama with an optional API key, default model, and default base URL", () => {
+    const config = loadConfig({
+      PPMA_PROVIDER: "ollama",
+      PPMA_TELEGRAM_BOT_TOKEN: "tg-test",
+      PPMA_TELEGRAM_ALLOWED_CHAT_ID: "12345",
+    });
+    expect(config.provider).toBe("ollama");
+    expect(config.apiKey).toBe("");
+    expect(config.model).toBe("llama3");
+    expect(config.baseUrl).toBe("http://localhost:11434/v1");
+  });
+
+  test("honours an explicit OLLAMA_API_KEY and PPMA_BASE_URL override", () => {
+    const config = loadConfig({
+      PPMA_PROVIDER: "ollama",
+      OLLAMA_API_KEY: "ollama-test",
+      PPMA_BASE_URL: "http://ollama.local:11434/v1",
+      PPMA_TELEGRAM_BOT_TOKEN: "tg-test",
+      PPMA_TELEGRAM_ALLOWED_CHAT_ID: "12345",
+    });
+    expect(config.apiKey).toBe("ollama-test");
+    expect(config.baseUrl).toBe("http://ollama.local:11434/v1");
+  });
+
+  test("other providers default to an empty base URL", () => {
+    const config = loadConfig(base);
+    expect(config.baseUrl).toBe("");
+  });
 });

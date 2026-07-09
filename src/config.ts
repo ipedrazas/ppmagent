@@ -6,7 +6,7 @@
 import { LOG_FORMATS, LOG_LEVELS, type LogFormat, type LogLevel } from "./logger.ts";
 
 /** LLM providers we support. Names match the provider ids pi's getBuiltinModel() expects. */
-export const PROVIDERS = ["anthropic", "deepseek", "zai", "openrouter"] as const;
+export const PROVIDERS = ["anthropic", "deepseek", "zai", "openrouter", "ollama"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 /** Friendly aliases accepted in PPMA_PROVIDER, normalised to the pi provider id. */
@@ -21,7 +21,14 @@ const PROVIDER_API_KEY_ENV: Record<Provider, string> = {
   deepseek: "DEEPSEEK_API_KEY",
   zai: "ZAI_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
+  ollama: "OLLAMA_API_KEY",
 };
+
+/**
+ * Providers whose API key is optional. Ollama runs against a local server that
+ * typically has no auth in front of it, unlike the hosted providers above.
+ */
+const OPTIONAL_API_KEY_PROVIDERS = new Set<Provider>(["ollama"]);
 
 /** Default model id per provider, used when PPMA_MODEL is unset. */
 const PROVIDER_DEFAULT_MODEL: Record<Provider, string> = {
@@ -29,15 +36,34 @@ const PROVIDER_DEFAULT_MODEL: Record<Provider, string> = {
   deepseek: "deepseek-v4-pro",
   zai: "glm-4.7",
   openrouter: "anthropic/claude-sonnet-4.6",
+  ollama: "llama3",
+};
+
+/**
+ * Default base URL per provider, used when PPMA_BASE_URL is unset. Only
+ * providers reachable at a non-standard (e.g. local) endpoint need one — the
+ * hosted providers resolve their base URL from pi's built-in catalog.
+ */
+const PROVIDER_DEFAULT_BASE_URL: Partial<Record<Provider, string>> = {
+  ollama: "http://localhost:11434/v1",
 };
 
 export interface Config {
   /** Selected LLM provider (the id passed to pi's getBuiltinModel()). */
   provider: Provider;
-  /** API key for the selected provider. */
+  /**
+   * API key for the selected provider. Empty for providers in
+   * {@link OPTIONAL_API_KEY_PROVIDERS} (e.g. ollama) when unset.
+   */
   apiKey: string;
   /** Model id passed to pi's getBuiltinModel(). */
   model: string;
+  /**
+   * Base URL override for OpenAI-compatible providers reachable at a
+   * non-standard endpoint (e.g. a local Ollama server). Empty = use the
+   * provider's built-in default.
+   */
+  baseUrl: string;
 
   /** `ppm` binary (path or name on PATH). */
   ppmBin: string;
@@ -283,8 +309,11 @@ export function loadConfig(env: Env = process.env): Config {
   const provider = resolveProvider(env);
   return {
     provider,
-    apiKey: required(env, PROVIDER_API_KEY_ENV[provider]),
+    apiKey: OPTIONAL_API_KEY_PROVIDERS.has(provider)
+      ? optional(env, PROVIDER_API_KEY_ENV[provider], "")
+      : required(env, PROVIDER_API_KEY_ENV[provider]),
     model: optional(env, "PPMA_MODEL", PROVIDER_DEFAULT_MODEL[provider]),
+    baseUrl: optional(env, "PPMA_BASE_URL", PROVIDER_DEFAULT_BASE_URL[provider] ?? ""),
 
     ppmBin: optional(env, "PPMA_PPM_BIN", "ppm"),
     ppmMemoryRoot: optional(env, "PPM_MEMORY_ROOT", "./memory"),

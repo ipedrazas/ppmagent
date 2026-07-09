@@ -11,6 +11,7 @@ export function makeTestConfig(overrides: Partial<Config> = {}): Config {
     provider: "anthropic",
     apiKey: "test-key",
     model: "faux-1",
+    baseUrl: "",
     ppmBin: "ppm",
     ppmMemoryRoot: "/tmp",
     contextRecent: 5,

@@ -1,5 +1,6 @@
 import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
-import type { Model } from "@earendil-works/pi-ai";
+import { createProvider, envApiKeyAuth, type Model } from "@earendil-works/pi-ai";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import type { Config } from "./config.ts";
 import { type Logger, nullLogger } from "./logger.ts";
@@ -85,12 +86,52 @@ Reminders (reminder_* tools):
 - To show pending reminders call reminder_list; to cancel one call reminder_cancel with its id.`;
 
 /**
- * Resolve a model from a provider id + model id. `getBuiltinModel` is strongly
- * typed over the built-in catalog; the casts let config-supplied values flow
- * through (it is a runtime catalog lookup).
+ * pi-ai has no built-in Ollama provider (it's a local, self-hosted server with
+ * no fixed model catalog), so it can't be resolved via `getBuiltinModel`.
+ * Build it the same way pi-ai's own OpenAI-compatible providers do — deepseek,
+ * zai, and openrouter all wrap `openAICompletionsApi()` via `createProvider` —
+ * pointed at the configured base URL instead of a hosted one.
  */
-function resolveModel(provider: string, modelId: string): Model<any> {
-  return getBuiltinModel(provider as "anthropic", modelId as "claude-sonnet-4-6");
+function ollamaProvider(baseUrl: string) {
+  return createProvider({
+    id: "ollama",
+    name: "Ollama",
+    baseUrl,
+    auth: { apiKey: envApiKeyAuth("Ollama API key", ["OLLAMA_API_KEY"]) },
+    models: [],
+    api: openAICompletionsApi(),
+  });
+}
+
+/** Build the runtime Model descriptor for the configured Ollama model id. */
+function resolveOllamaModel(config: Config): Model<"openai-completions"> {
+  const provider = ollamaProvider(config.baseUrl);
+  return {
+    id: config.model,
+    name: config.model,
+    api: "openai-completions",
+    provider: provider.id,
+    baseUrl: provider.baseUrl ?? config.baseUrl,
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 8_192,
+  };
+}
+
+/**
+ * Resolve the configured provider + model to a runtime `Model`. Ollama is
+ * handled specially (see {@link resolveOllamaModel}); every other provider
+ * goes through `getBuiltinModel`, which is strongly typed over the built-in
+ * catalog — the casts let config-supplied values flow through (it is a
+ * runtime catalog lookup).
+ */
+function resolveModel(config: Config): Model<any> {
+  if (config.provider === "ollama") {
+    return resolveOllamaModel(config);
+  }
+  return getBuiltinModel(config.provider as "anthropic", config.model as "claude-sonnet-4-6");
 }
 
 export interface BuiltAgent {
@@ -221,7 +262,7 @@ export function buildAgent(
     buildAskUserTool(ppm),
   ];
 
-  const model = overrides.model ?? resolveModel(config.provider, config.model);
+  const model = overrides.model ?? resolveModel(config);
   const memoryContext = makeTransformContext({
     ppm,
     recent: config.contextRecent,
