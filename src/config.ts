@@ -196,6 +196,15 @@ export interface Config {
   sessionMaxCostUsd: number;
 
   /**
+   * Whether to surface tool-calling activity in Telegram: an incremental
+   * message for each tool call (name + arguments) and one for its result,
+   * sent as the turn progresses. Default: false (only the typing indicator
+   * is shown until the final reply, as before). Set `PPMA_SHOW_TOOL_CALLS=true`
+   * to enable.
+   */
+  showToolCalls: boolean;
+
+  /**
    * GitHub Personal Access Token (or GitHub App installation token) forwarded
    * to the `proteos` CLI so that `gh` is authenticated on ProteOS machines.
    * Required for `proteos_git_pr` to open PRs and for headless coding agents
@@ -358,5 +367,6 @@ export function loadConfig(env: Env = process.env): Config {
     turnMaxTools: int(env, "PPMA_TURN_MAX_TOOLS", 0),
     turnMaxCostUsd: float(env, "PPMA_TURN_MAX_COST_USD", 0),
     sessionMaxCostUsd: float(env, "PPMA_SESSION_MAX_COST_USD", 0),
+    showToolCalls: env.PPMA_SHOW_TOOL_CALLS === "true",
   };
 }

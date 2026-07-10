@@ -41,6 +41,7 @@ export function makeTestConfig(overrides: Partial<Config> = {}): Config {
     turnMaxTools: 0,
     turnMaxCostUsd: 0,
     sessionMaxCostUsd: 0,
+    showToolCalls: false,
     ...overrides,
   };
 }
