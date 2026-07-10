@@ -169,6 +169,7 @@ async function main(): Promise<void> {
         await telegramClient.sendMessage(config.telegramAllowedChatId, msg);
       }
     },
+    intervalMs: config.reminderPollIntervalMs,
     logger,
   });
 

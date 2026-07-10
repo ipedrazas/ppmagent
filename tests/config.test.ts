@@ -21,6 +21,7 @@ describe("loadConfig", () => {
     expect(config.proteosBin).toBe("proteos");
     expect(config.proteosUrl).toBe("");
     expect(config.proteosWatchIntervalMs).toBe(30_000);
+    expect(config.reminderPollIntervalMs).toBe(30_000);
     expect(config.compactionTokenThreshold).toBe(0);
     expect(config.telegramAllowedChatId).toBe(12345);
     expect(config.logLevel).toBe("info");
@@ -31,6 +32,11 @@ describe("loadConfig", () => {
   test("parses custom proteos watch interval", () => {
     const config = loadConfig({ ...base, PPMA_PROTEOS_WATCH_INTERVAL_MS: "60000" });
     expect(config.proteosWatchIntervalMs).toBe(60_000);
+  });
+
+  test("parses custom reminder poll interval", () => {
+    const config = loadConfig({ ...base, PPMA_REMINDER_POLL_INTERVAL_MS: "45000" });
+    expect(config.reminderPollIntervalMs).toBe(45_000);
   });
 
   test("parses logging overrides", () => {

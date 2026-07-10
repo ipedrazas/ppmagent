@@ -21,6 +21,7 @@ export function makeTestConfig(overrides: Partial<Config> = {}): Config {
     proteosBin: "proteos",
     proteosUrl: "",
     proteosWatchIntervalMs: 30_000,
+    reminderPollIntervalMs: 30_000,
     telegramBotToken: "test",
     telegramAllowedChatId: undefined,
     sessionFile: "/tmp/session.json",
