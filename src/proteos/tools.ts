@@ -2,7 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, toolResult } from "../tool-helpers.ts";
 import { CONFIRM_SUFFIX, type ConfirmationStore } from "../tools/confirmation.ts";
-import { sanitizeLine, sanitizeString } from "../tools/sanitize.ts";
+import { sanitizeLine, sanitizePrompt, sanitizeString } from "../tools/sanitize.ts";
 import type { ProteosClient } from "./proteos.ts";
 import { extractTaskId } from "./watcher.ts";
 
@@ -211,16 +211,12 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
       ),
     }),
     execute: async (_id, params, signal) => {
-      const out = await proteos.taskRun(params, signal);
+      const prompt = sanitizePrompt(params.prompt);
+      const out = await proteos.taskRun({ ...params, prompt }, signal);
       if (params.wait && opts?.onTaskDispatched) {
         const taskId = extractTaskId(out);
         if (taskId) {
-          opts.onTaskDispatched(
-            params.machine,
-            taskId,
-            params.project,
-            params.prompt.slice(0, 200),
-          );
+          opts.onTaskDispatched(params.machine, taskId, params.project, prompt.slice(0, 200));
         }
       }
       return toolResult(out, { output: out });
@@ -265,7 +261,12 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
       prompt: Type.String(),
     }),
     execute: async (_id, params, signal) => {
-      const out = await proteos.taskSend(params.machine, params.task, params.prompt, signal);
+      const out = await proteos.taskSend(
+        params.machine,
+        params.task,
+        sanitizePrompt(params.prompt),
+        signal,
+      );
       return toolResult(out, { output: out });
     },
   });
