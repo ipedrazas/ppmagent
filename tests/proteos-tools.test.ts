@@ -184,6 +184,58 @@ describe("ProteosClient argv + exit handling", () => {
   });
 });
 
+/** A fake `proteos` binary whose `task run` prints a task id, like the real CLI. */
+const FAKE_TASK_RUN = `#!/usr/bin/env bash
+if [ "$1" = "task" ] && [ "$2" = "run" ]; then echo "dispatched task t-42"; exit 0; fi
+exit 0
+`;
+
+describe("proteos_task_run wait opt-in", () => {
+  let dir: string;
+  let bin: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "proteos-taskrun-test-"));
+    bin = join(dir, "proteos");
+    await writeFile(bin, FAKE_TASK_RUN);
+    await chmod(bin, 0o755);
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function runTool(onTaskDispatched: (m: string, t: string, p: string, l: string) => void) {
+    const proteos = new ProteosClient({ bin });
+    const tool = buildProteosTools(proteos, { onTaskDispatched }).find(
+      (t) => t.name === "proteos_task_run",
+    );
+    if (!tool) throw new Error("proteos_task_run not found");
+    return tool;
+  }
+
+  test("does not register the task for background tracking by default", async () => {
+    const dispatched: unknown[] = [];
+    const tool = runTool((...args) => dispatched.push(args));
+    await tool.execute("call-1", { machine: "m-1", project: "p", prompt: "do it" });
+    expect(dispatched).toEqual([]);
+  });
+
+  test("wait:true registers the task for background tracking", async () => {
+    const dispatched: unknown[] = [];
+    const tool = runTool((...args) => dispatched.push(args));
+    await tool.execute("call-1", { machine: "m-1", project: "p", prompt: "do it", wait: true });
+    expect(dispatched).toEqual([["m-1", "t-42", "p", "do it"]]);
+  });
+
+  test("wait:false behaves the same as omitting it", async () => {
+    const dispatched: unknown[] = [];
+    const tool = runTool((...args) => dispatched.push(args));
+    await tool.execute("call-1", { machine: "m-1", project: "p", prompt: "do it", wait: false });
+    expect(dispatched).toEqual([]);
+  });
+});
+
 describe("proteos_machine_create confirmation gate", () => {
   let dir: string;
   let bin: string;

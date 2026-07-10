@@ -20,12 +20,16 @@ export interface ProteosToolsOptions {
  *
  * Flow: pick a machine (proteos_machines_list) → make sure the repo is on it
  * (proteos_project_ensure) → dispatch (proteos_task_run, returns a task id and
- * does NOT block) → poll (proteos_task_get). Every command takes the machine id
- * explicitly; task/git/project commands also take the project (the repo's
- * workspace directory name).
+ * does NOT block). By default the dispatch is fire-and-forget — nobody polls
+ * it. Only when the caller passes wait:true is the task tracked in the
+ * background for a completion notification; proteos_task_get is always
+ * available for a manual, one-off status check. Every command takes the
+ * machine id explicitly; task/git/project commands also take the project
+ * (the repo's workspace directory name).
  *
  * `task watch` (live event stream) is intentionally not exposed: it blocks for up
- * to 30m, which would freeze the chat. Use proteos_task_get to poll instead.
+ * to 30m, which would freeze the chat. Use proteos_task_get for a one-off check,
+ * or proteos_task_run's wait:true for background tracking, instead.
  */
 export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOptions): AgentTool[] {
   // ── Discovery ──
@@ -188,7 +192,7 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
   const taskRun = defineTool({
     name: "proteos_task_run",
     description:
-      "Dispatch a headless coding-agent task against a project on a machine, given a natural-language prompt. Returns immediately with a task id; it does NOT wait. The agent leaves a dirty working tree and never commits. Poll progress with proteos_task_get. Ensure the project exists first (proteos_project_ensure).",
+      "Dispatch a headless coding-agent task against a project on a machine, given a natural-language prompt. Always returns immediately with a task id; by default nothing further happens automatically — the agent leaves a dirty working tree and never commits. Set wait:true to have the task tracked in the background and get a proactive notification when it finishes, instead of manually polling with proteos_task_get. Ensure the project exists first (proteos_project_ensure).",
     label: "Run task",
     parameters: Type.Object({
       machine: Type.String(),
@@ -199,10 +203,16 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
           description: "agent provider (headless lane: claude, pi). Defaults to claude.",
         }),
       ),
+      wait: Type.Optional(
+        Type.Boolean({
+          description:
+            "Only set this when the user explicitly asks to wait for or be notified about this task. Tracks it in the background and sends a notification on completion, instead of the default fire-and-forget dispatch.",
+        }),
+      ),
     }),
     execute: async (_id, params, signal) => {
       const out = await proteos.taskRun(params, signal);
-      if (opts?.onTaskDispatched) {
+      if (params.wait && opts?.onTaskDispatched) {
         const taskId = extractTaskId(out);
         if (taskId) {
           opts.onTaskDispatched(
@@ -232,7 +242,7 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
   const getTask = defineTool({
     name: "proteos_task_get",
     description:
-      "Show one task's status and, when finished, its result (session id, usage/cost, summary, error). Use this to poll a task dispatched with proteos_task_run.",
+      "Show one task's status and, when finished, its result (session id, usage/cost, summary, error). Use this for a one-off status check on a task dispatched with proteos_task_run; call it again later if the task is still running rather than looping on it in this turn.",
     label: "Get task",
     parameters: Type.Object({
       machine: Type.String(),
