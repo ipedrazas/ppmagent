@@ -4,6 +4,7 @@ import { defineTool, toolResult } from "../tool-helpers.ts";
 import { CONFIRM_SUFFIX, type ConfirmationStore } from "../tools/confirmation.ts";
 import { sanitizeLine, sanitizeString } from "../tools/sanitize.ts";
 import {
+  classifySearchQuery,
   type DataboxClient,
   type DataboxRow,
   type IssueMutationResult,
@@ -171,11 +172,21 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
 
   const searchTasks = defineTool({
     name: "tracker_search_tasks",
-    description: "Search tasks in the tracker.",
+    description:
+      "Full-text search tasks in the tracker. For a known reference (e.g. TAV-41) use tracker_get_task, and for a workflow status (e.g. Backlog) use tracker_list_tasks with a status filter instead — this tool detects those cases and routes to the cheaper lookup automatically, but calling the right tool directly skips the extra hop.",
     label: "Search tasks",
     parameters: Type.Object({ query: Type.String() }),
     execute: async (_id, params, signal) => {
-      const tasks = await databox.searchTasks(params.query, 50, signal);
+      const classified = classifySearchQuery(params.query);
+      if (classified.kind === "ref") {
+        const task = await databox.getTask(classified.ref, signal);
+        return toolResult(renderTask(task), [task]);
+      }
+      if (classified.kind === "status") {
+        const tasks = await databox.listTasks(50, [`status=${classified.status}`], signal);
+        return toolResult(tasks.map(renderTask).join("\n\n") || "No matches.", tasks);
+      }
+      const tasks = await databox.searchTasks(classified.query, 50, signal);
       return toolResult(tasks.map(renderTask).join("\n\n") || "No matches.", tasks);
     },
   });
