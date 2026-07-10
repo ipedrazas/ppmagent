@@ -9,15 +9,15 @@ export interface ReminderRunnerOptions {
   store: ReminderStore;
   /** Deliver a notification to the user (e.g. send a Telegram message). */
   notify: (message: string) => Promise<void>;
-  /** How long to sleep between poll rounds. Default: 60 000 ms (1 minute). */
+  /** How long to sleep between poll rounds. Default: 30 000 ms (30 seconds). */
   intervalMs?: number;
   logger?: Logger;
 }
 
 /**
- * Background loop that polls pending reminders each minute and calls `notify`
- * for any that are now due. State is persisted in {@link ReminderStore} so
- * reminders survive a process restart.
+ * Background loop that polls pending reminders every `intervalMs` and calls
+ * `notify` for any that are now due. State is persisted in
+ * {@link ReminderStore} so reminders survive a process restart.
  *
  * Usage: call `start()` concurrently alongside other async work; call `stop()`
  * to wind down promptly.
@@ -31,7 +31,7 @@ export class ReminderRunner {
 
   constructor(private readonly opts: ReminderRunnerOptions) {
     this.store = opts.store;
-    this.intervalMs = opts.intervalMs ?? 60_000;
+    this.intervalMs = opts.intervalMs ?? 30_000;
     this.log = (opts.logger ?? nullLogger).child().withContext({ component: "reminder-runner" });
   }
 
@@ -60,9 +60,29 @@ export class ReminderRunner {
     this.abort.abort();
   }
 
+  /**
+   * Run exactly one poll round and return when it completes. Lets callers
+   * drive the runner deterministically (used by tests) without racing the
+   * background loop's timers against an in-flight poll.
+   */
+  async pollOnce(): Promise<void> {
+    this.running = true;
+    await this.poll();
+  }
+
   private async poll(): Promise<void> {
     const now = Date.now();
-    const due = this.store.takeDue(now);
+    let due: Reminder[];
+    try {
+      due = this.store.takeDue(now);
+    } catch (err) {
+      // A store read/write failure (e.g. a transient disk error) must not
+      // propagate: that would reject start()'s promise, which — awaited
+      // alongside the Telegram bot in main()'s Promise.all — would crash the
+      // entire process over a reminder-store hiccup. Log and retry next round.
+      this.log.withError(err).warn("failed to read due reminders; will retry next poll");
+      return;
+    }
     if (due.length === 0) return;
     this.log.withMetadata({ count: due.length }).info("firing due reminders");
     for (const reminder of due) {

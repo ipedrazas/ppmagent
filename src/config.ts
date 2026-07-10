@@ -92,6 +92,8 @@ export interface Config {
   proteosUrl: string;
   /** Polling interval for the background ProteOS task watcher, in milliseconds. */
   proteosWatchIntervalMs: number;
+  /** Polling interval for the background reminder runner, in milliseconds. */
+  reminderPollIntervalMs: number;
 
   /** Telegram bot token. */
   telegramBotToken: string;
@@ -325,6 +327,7 @@ export function loadConfig(env: Env = process.env): Config {
     proteosBin: optional(env, "PPMA_PROTEOS_BIN", "proteos"),
     proteosUrl: optional(env, "PROTEOS_URL", ""),
     proteosWatchIntervalMs: int(env, "PPMA_PROTEOS_WATCH_INTERVAL_MS", 30_000),
+    reminderPollIntervalMs: int(env, "PPMA_REMINDER_POLL_INTERVAL_MS", 30_000),
 
     telegramBotToken: required(env, "PPMA_TELEGRAM_BOT_TOKEN"),
     telegramAllowedChatId: resolveAllowedChatId(env),
