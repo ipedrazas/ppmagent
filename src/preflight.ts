@@ -17,6 +17,25 @@ export interface PreflightResults {
 }
 
 /**
+ * Oldest dbxcli verified to speak the `--filter` grammar (field=value) that
+ * the tracker tool descriptions teach the model. An older binary (v0.1.10
+ * expects FIELD:OP:VALUE) rejects every filtered list call, which the agent
+ * cannot talk its way around — so version skew is surfaced loudly at boot.
+ */
+export const DBXCLI_MIN_VERSION = "0.1.12";
+
+/** Compare dotted numeric versions; negative when a < b. */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/**
  * Probe a single CLI binary by running it with the given args. Returns a
  * CliHealth describing whether the binary was found. Exit code is not treated
  * as a failure — some CLIs (e.g. `proteos --help`) exit non-zero for help
@@ -66,6 +85,20 @@ export async function runPreflightChecks(
         .withMetadata({ cli: name, error: health.error })
         .warn(`CLI unavailable at startup: ${name}`);
     }
+  }
+
+  if (
+    dbxcli.available &&
+    dbxcli.version &&
+    compareVersions(dbxcli.version, DBXCLI_MIN_VERSION) < 0
+  ) {
+    logger
+      .withMetadata({ found: dbxcli.version, required: DBXCLI_MIN_VERSION })
+      .error(
+        `dbxcli ${dbxcli.version} is older than ${DBXCLI_MIN_VERSION}; its --filter grammar ` +
+          "differs from what the tracker tools advertise, so filtered list calls will fail. " +
+          "Rebuild the image with a current DBXCLI_VERSION.",
+      );
   }
 
   return results;

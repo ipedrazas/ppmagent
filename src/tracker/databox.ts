@@ -533,19 +533,38 @@ export class DataboxClient {
   }
 
   /**
-   * Get one project by UUID (via `dbxcli get`) or by case-insensitive name (a
-   * client-side scan, since projects have no human identifier to `get` by).
-   * `limit` bounds the name scan (dataset cap is 100).
+   * Get one project by UUID (via `dbxcli get`) or by case-insensitive name.
+   * Name lookup goes through `dbxcli search` first — the server resolves the
+   * name, so it works regardless of how many projects exist — and falls back
+   * to a client-side list scan (bounded by `limit`; dataset cap is 100) when
+   * search errors or returns no exact match.
    */
   async getProject(
     idOrName: string,
     limit = this.defaultLimit,
     signal?: AbortSignal,
   ): Promise<DataboxRow> {
+    const dataset = await this.datasetAlias("projects", signal);
     if (isUuid(idOrName)) {
-      const dataset = await this.datasetAlias("projects", signal);
       return this.run<DataboxRow>(["get", dataset, idOrName], signal);
     }
+
+    const byName = (projects: DataboxRow[]) =>
+      projects.find(
+        (p) => typeof p.name === "string" && p.name.toLowerCase() === idOrName.toLowerCase(),
+      );
+
+    try {
+      const res = await this.run<ListResponse<DataboxRow>>(
+        ["search", dataset, validateSearchQuery(idOrName, "project"), "--limit", String(limit)],
+        signal,
+      );
+      const match = byName(res.items ?? []);
+      if (match) return match;
+    } catch {
+      // Fall through to the list scan; its errors carry the useful message.
+    }
+
     let projects: DataboxRow[];
     try {
       projects = await this.listProjects(limit, signal);
@@ -553,14 +572,12 @@ export class DataboxClient {
       if (error instanceof DataboxError && /complexity/i.test(error.message)) {
         throw new DataboxError(
           `looking up project "${idOrName}" by name exceeded the Linear API complexity limit; ` +
-            "use the project UUID instead",
+            "use the project UUID instead (tracker_list_projects shows ids)",
         );
       }
       throw error;
     }
-    const match = projects.find(
-      (p) => typeof p.name === "string" && p.name.toLowerCase() === idOrName.toLowerCase(),
-    );
+    const match = byName(projects);
     if (!match) throw new DataboxError(`no project found matching ${idOrName}`);
     return match;
   }

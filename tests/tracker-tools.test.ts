@@ -119,3 +119,86 @@ describe("tracker_search_tasks routing (TAV-91)", () => {
     expect(row?._argv).toContain("fix login bug");
   });
 });
+
+/**
+ * Fake `dbxcli` for project lookups: a projects dataset where `search` knows
+ * "Casa" and `list` knows "PPMAgent", so tests can tell which path resolved a
+ * name lookup (server-side search vs the client-side list-scan fallback).
+ */
+const FAKE_DBXCLI_PROJECTS = `#!/usr/bin/env bash
+shift 2
+cmd="$1"
+argv="$*"
+case "$cmd" in
+  datasets)
+    echo '{"datasets":[{"alias":"projects","data_kind":"projects"}]}'
+    ;;
+  action)
+    echo '{"items":[]}'
+    ;;
+  search)
+    echo '{"items":[{"id":"proj-search","name":"Casa","_argv":"'"$argv"'"}]}'
+    ;;
+  list)
+    echo '{"items":[{"id":"proj-list","name":"PPMAgent","_argv":"'"$argv"'"}]}'
+    ;;
+  get)
+    echo '{"id":"proj-get","name":"ByUuid","_argv":"'"$argv"'"}'
+    ;;
+esac
+exit 0
+`;
+
+describe("tracker_get_project name resolution", () => {
+  let dir: string;
+  let bin: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "dbxcli-proj-test-"));
+    bin = join(dir, "dbxcli");
+    await writeFile(bin, FAKE_DBXCLI_PROJECTS);
+    await chmod(bin, 0o755);
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function getProjectTool() {
+    const client = new DataboxClient({ bin, config: "" });
+    const tool = buildTrackerTools(client).find((t) => t.name === "tracker_get_project");
+    if (!tool) throw new Error("tracker_get_project not found");
+    return tool;
+  }
+
+  test("resolves a name via server-side `search` (case-insensitive)", async () => {
+    const result = await getProjectTool().execute("call-1", { ref: "casa" });
+    const row = result.details as { id: string; _argv: string };
+    expect(row.id).toBe("proj-search");
+    expect(row._argv).toContain("search");
+  });
+
+  test("falls back to the list scan when search has no exact-name match", async () => {
+    const result = await getProjectTool().execute("call-1", { ref: "PPMAgent" });
+    const row = result.details as { id: string; _argv: string };
+    expect(row.id).toBe("proj-list");
+  });
+
+  test("fetches by UUID via `get` without any name scan", async () => {
+    const uuid = "25afba6f-32b0-45c5-868b-67db252f4950";
+    const result = await getProjectTool().execute("call-1", { ref: uuid });
+    const row = result.details as { id: string; _argv: string };
+    expect(row.id).toBe("proj-get");
+    expect(row._argv).toContain(uuid);
+  });
+
+  test("throws a clear error when neither search nor list matches", async () => {
+    const err = await getProjectTool()
+      .execute("call-1", { ref: "NoSuchProject" })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(String(err)).toMatch(/no project found/i);
+  });
+});
