@@ -203,6 +203,21 @@ describe("loadConfig", () => {
     expect(config.githubToken).toBe("ghp_testtoken123");
   });
 
+  test("showToolCalls defaults to false", () => {
+    const config = loadConfig(base);
+    expect(config.showToolCalls).toBe(false);
+  });
+
+  test("PPMA_SHOW_TOOL_CALLS=true enables tool-call status messages", () => {
+    const config = loadConfig({ ...base, PPMA_SHOW_TOOL_CALLS: "true" });
+    expect(config.showToolCalls).toBe(true);
+  });
+
+  test("PPMA_SHOW_TOOL_CALLS accepts only the literal 'true'", () => {
+    const config = loadConfig({ ...base, PPMA_SHOW_TOOL_CALLS: "yes" });
+    expect(config.showToolCalls).toBe(false);
+  });
+
   test("selects ollama with an optional API key, default model, and default base URL", () => {
     const config = loadConfig({
       PPMA_PROVIDER: "ollama",

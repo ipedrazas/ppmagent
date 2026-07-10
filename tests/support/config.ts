@@ -17,6 +17,7 @@ export function makeTestConfig(overrides: Partial<Config> = {}): Config {
     contextRecent: 5,
     dbxcliBin: "dbxcli",
     dbxcliConfig: "",
+    dbxcliQueryLimit: 100,
     proteosBin: "proteos",
     proteosUrl: "",
     proteosWatchIntervalMs: 30_000,
@@ -41,6 +42,7 @@ export function makeTestConfig(overrides: Partial<Config> = {}): Config {
     turnMaxTools: 0,
     turnMaxCostUsd: 0,
     sessionMaxCostUsd: 0,
+    showToolCalls: false,
     ...overrides,
   };
 }

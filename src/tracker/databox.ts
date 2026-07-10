@@ -11,6 +11,11 @@ export interface DataboxClientOptions {
   logger?: Logger;
   /** Cap combined subprocess output (stdout+stderr) at this many bytes. 0 = unlimited. */
   maxOutputBytes?: number;
+  /**
+   * Default row cap for list/scan calls whose caller doesn't pass an explicit
+   * limit. Defaults to 100.
+   */
+  queryLimit?: number;
 }
 
 /**
@@ -344,11 +349,14 @@ export function buildUpdateProjectParams(input: UpdateProjectInput): {
  */
 export class DataboxClient {
   private readonly log: Logger;
+  /** Default row cap for list/scan calls whose caller doesn't pass an explicit limit. */
+  private readonly defaultLimit: number;
   /** Lazily-loaded, cached discovery of dataset + action aliases. */
   private catalogPromise?: Promise<DataboxCatalog>;
 
   constructor(private readonly opts: DataboxClientOptions) {
     this.log = (opts.logger ?? nullLogger).child().withContext({ component: "databox" });
+    this.defaultLimit = opts.queryLimit ?? 100;
   }
 
   private baseArgs(): string[] {
@@ -437,7 +445,11 @@ export class DataboxClient {
    * clauses (e.g. `status=Done`, `status!=Canceled`, `labels in bug,urgent`,
    * `project_id=<uuid>`); they are AND-combined by the datasource.
    */
-  async listTasks(limit = 50, filters: string[] = [], signal?: AbortSignal): Promise<DataboxRow[]> {
+  async listTasks(
+    limit = this.defaultLimit,
+    filters: string[] = [],
+    signal?: AbortSignal,
+  ): Promise<DataboxRow[]> {
     const dataset = await this.datasetAlias("issues", signal);
     const args = ["list", dataset, "--limit", String(limit)];
     for (const filter of filters) args.push("--filter", validateFilter(filter));
@@ -445,7 +457,11 @@ export class DataboxClient {
     return res.items ?? [];
   }
 
-  async searchTasks(query: string, limit = 50, signal?: AbortSignal): Promise<DataboxRow[]> {
+  async searchTasks(
+    query: string,
+    limit = this.defaultLimit,
+    signal?: AbortSignal,
+  ): Promise<DataboxRow[]> {
     const dataset = await this.datasetAlias("issues", signal);
     const res = await this.run<ListResponse<DataboxRow>>(
       ["search", dataset, validateSearchQuery(query, "query"), "--limit", String(limit)],
@@ -507,7 +523,7 @@ export class DataboxClient {
 
   // ── Projects (read + write) ──
 
-  async listProjects(limit = 50, signal?: AbortSignal): Promise<DataboxRow[]> {
+  async listProjects(limit = this.defaultLimit, signal?: AbortSignal): Promise<DataboxRow[]> {
     const dataset = await this.datasetAlias("projects", signal);
     const res = await this.run<ListResponse<DataboxRow>>(
       ["list", dataset, "--limit", String(limit)],
@@ -521,7 +537,11 @@ export class DataboxClient {
    * client-side scan, since projects have no human identifier to `get` by).
    * `limit` bounds the name scan (dataset cap is 100).
    */
-  async getProject(idOrName: string, limit = 100, signal?: AbortSignal): Promise<DataboxRow> {
+  async getProject(
+    idOrName: string,
+    limit = this.defaultLimit,
+    signal?: AbortSignal,
+  ): Promise<DataboxRow> {
     if (isUuid(idOrName)) {
       const dataset = await this.datasetAlias("projects", signal);
       return this.run<DataboxRow>(["get", dataset, idOrName], signal);
@@ -552,7 +572,7 @@ export class DataboxClient {
    */
   async resolveTeamId(team: string, signal?: AbortSignal): Promise<string> {
     if (isUuid(team)) return team;
-    const teams = await this.listTeams(100, signal);
+    const teams = await this.listTeams(this.defaultLimit, signal);
     const match = teams.find((t) => {
       const key = typeof t.key === "string" ? t.key : "";
       const name = typeof t.name === "string" ? t.name : "";
@@ -607,7 +627,7 @@ export class DataboxClient {
 
   // ── Teams (read-only reference) ──
 
-  async listTeams(limit = 50, signal?: AbortSignal): Promise<DataboxRow[]> {
+  async listTeams(limit = this.defaultLimit, signal?: AbortSignal): Promise<DataboxRow[]> {
     const dataset = await this.datasetAlias("teams", signal);
     const res = await this.run<ListResponse<DataboxRow>>(
       ["list", dataset, "--limit", String(limit)],
@@ -620,7 +640,11 @@ export class DataboxClient {
    * Get one team by UUID (via `dbxcli get`) or by key/name (a client-side scan).
    * `limit` bounds the scan (dataset cap is 100).
    */
-  async getTeam(keyOrName: string, limit = 100, signal?: AbortSignal): Promise<DataboxRow> {
+  async getTeam(
+    keyOrName: string,
+    limit = this.defaultLimit,
+    signal?: AbortSignal,
+  ): Promise<DataboxRow> {
     if (isUuid(keyOrName)) {
       const dataset = await this.datasetAlias("teams", signal);
       return this.run<DataboxRow>(["get", dataset, keyOrName], signal);

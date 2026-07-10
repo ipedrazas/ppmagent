@@ -2,6 +2,7 @@
 
 import { type Logger, nullLogger } from "../logger.ts";
 import { redact } from "../redact.ts";
+import { splitByLength } from "./chunk.ts";
 
 export interface InboundMessage {
   chatId: number;
@@ -22,7 +23,7 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 /** Telegram message formatting mode; omitted means plain text. */
 export type ParseMode = "MarkdownV2" | "HTML" | "Markdown";
 
-const MAX_MESSAGE_LENGTH = 4096;
+export const MAX_MESSAGE_LENGTH = 4096;
 const DEFAULT_SEND_TIMEOUT_MS = 30_000;
 const MAX_RATE_LIMIT_RETRIES = 5;
 
@@ -141,32 +142,7 @@ export class TelegramClient {
   }
 
   private chunkText(text: string, maxLen = MAX_MESSAGE_LENGTH): string[] {
-    if (text.length <= maxLen) return [text];
-    const chunks: string[] = [];
-    let pos = 0;
-    while (pos < text.length) {
-      if (pos + maxLen >= text.length) {
-        chunks.push(text.slice(pos));
-        break;
-      }
-      const window = text.slice(pos, pos + maxLen);
-      // Prefer splitting on newline, then space, then hard-cut
-      let splitAt = window.lastIndexOf("\n");
-      if (splitAt > 0) {
-        chunks.push(window.slice(0, splitAt));
-        pos += splitAt + 1; // skip the newline itself
-        continue;
-      }
-      splitAt = window.lastIndexOf(" ");
-      if (splitAt > 0) {
-        chunks.push(window.slice(0, splitAt));
-        pos += splitAt + 1; // skip the space itself
-        continue;
-      }
-      chunks.push(window);
-      pos += maxLen;
-    }
-    return chunks;
+    return splitByLength(text, maxLen);
   }
 
   private async sendChunk(chatId: number, text: string, parseMode?: ParseMode): Promise<void> {
@@ -198,9 +174,14 @@ export class TelegramClient {
         continue;
       }
       if (!res.ok) {
+        const body = await res.text().catch(() => "");
         this.log
           .withMetadata({ chatId, status: res.status })
           .warn("sendMessage returned a non-2xx status");
+        // Surface the failure so callers (e.g. the MarkdownV2 plain-text
+        // fallback) can react — swallowing it here means a rejected send
+        // looks identical to a successful one.
+        throw new Error(`sendMessage failed with status ${res.status}: ${body}`);
       }
       return;
     }

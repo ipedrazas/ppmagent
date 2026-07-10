@@ -80,6 +80,12 @@ export interface Config {
    * here (see {@link DataboxClient}).
    */
   dbxcliConfig: string;
+  /**
+   * Default row limit for `tracker_list_tasks`, `tracker_search_tasks`,
+   * `tracker_list_projects`, and `tracker_list_teams`. Lower this if large
+   * queries trip the Linear API complexity limit.
+   */
+  dbxcliQueryLimit: number;
 
   /** `proteos` binary (path or name on PATH) for the ProteOS task lane. */
   proteosBin: string;
@@ -190,6 +196,15 @@ export interface Config {
    * accumulated session cost would breach this limit. 0 = unlimited.
    */
   sessionMaxCostUsd: number;
+
+  /**
+   * Whether to surface tool-calling activity in Telegram: an incremental
+   * message for each tool call (name + arguments) and one for its result,
+   * sent as the turn progresses. Default: false (only the typing indicator
+   * is shown until the final reply, as before). Set `PPMA_SHOW_TOOL_CALLS=true`
+   * to enable.
+   */
+  showToolCalls: boolean;
 
   /**
    * GitHub Personal Access Token (or GitHub App installation token) forwarded
@@ -323,6 +338,7 @@ export function loadConfig(env: Env = process.env): Config {
 
     dbxcliBin: optional(env, "PPMA_DBXCLI_BIN", "dbxcli"),
     dbxcliConfig: optional(env, "PPMA_DBXCLI_CONFIG", ""),
+    dbxcliQueryLimit: int(env, "PPMA_DBXCLI_QUERY_LIMIT", 100),
 
     proteosBin: optional(env, "PPMA_PROTEOS_BIN", "proteos"),
     proteosUrl: optional(env, "PROTEOS_URL", ""),
@@ -354,5 +370,6 @@ export function loadConfig(env: Env = process.env): Config {
     turnMaxTools: int(env, "PPMA_TURN_MAX_TOOLS", 0),
     turnMaxCostUsd: float(env, "PPMA_TURN_MAX_COST_USD", 0),
     sessionMaxCostUsd: float(env, "PPMA_SESSION_MAX_COST_USD", 0),
+    showToolCalls: env.PPMA_SHOW_TOOL_CALLS === "true",
   };
 }
