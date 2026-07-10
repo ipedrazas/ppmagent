@@ -175,6 +175,50 @@ export function taskRef(row: DataboxRow): string {
   return typeof row.id === "string" ? row.id : "";
 }
 
+/** A human task reference like `TAV-41`: a team key followed by `-<number>`. */
+const TASK_REF_RE = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
+
+/** `status:<value>` or `status=<value>`, case-insensitive on the `status` keyword. */
+const STATUS_PREFIX_RE = /^status\s*[:=]\s*(.+)$/i;
+
+/**
+ * Default Linear-style issue workflow states. Case-insensitive membership check
+ * for a bare query that names a status rather than free text (e.g. "Backlog").
+ * Not exhaustive of every workspace's custom states — a miss here just falls
+ * through to full-text search, so it costs an optimization, not correctness.
+ */
+const WORKFLOW_STATUS_WORDS = new Set([
+  "backlog",
+  "todo",
+  "in progress",
+  "in review",
+  "done",
+  "canceled",
+  "cancelled",
+  "duplicate",
+  "triage",
+]);
+
+export type SearchQueryClassification =
+  | { kind: "ref"; ref: string }
+  | { kind: "status"; status: string }
+  | { kind: "text"; query: string };
+
+/**
+ * Classify a `tracker_search_tasks` query so the tool layer can route ref
+ * lookups and status filters to the cheap `dbxcli get`/`list` paths instead of
+ * `dbxcli search` (full-text search), which is 5-10x slower and unnecessary
+ * for either case (TAV-91).
+ */
+export function classifySearchQuery(rawQuery: string): SearchQueryClassification {
+  const query = rawQuery.trim();
+  if (TASK_REF_RE.test(query)) return { kind: "ref", ref: query };
+  const statusPrefix = query.match(STATUS_PREFIX_RE);
+  if (statusPrefix) return { kind: "status", status: (statusPrefix[1] ?? "").trim() };
+  if (WORKFLOW_STATUS_WORDS.has(query.toLowerCase())) return { kind: "status", status: query };
+  return { kind: "text", query };
+}
+
 /**
  * Build the `create_issue` action params. Pure. `team_id` is sent only when an
  * explicit override is given; otherwise Databox pins/injects it server-side.
