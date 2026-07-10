@@ -482,7 +482,18 @@ export class DataboxClient {
       const dataset = await this.datasetAlias("projects", signal);
       return this.run<DataboxRow>(["get", dataset, idOrName], signal);
     }
-    const projects = await this.listProjects(limit, signal);
+    let projects: DataboxRow[];
+    try {
+      projects = await this.listProjects(limit, signal);
+    } catch (error) {
+      if (error instanceof DataboxError && /complexity/i.test(error.message)) {
+        throw new DataboxError(
+          `looking up project "${idOrName}" by name exceeded the Linear API complexity limit; ` +
+            "use the project UUID instead",
+        );
+      }
+      throw error;
+    }
     const match = projects.find(
       (p) => typeof p.name === "string" && p.name.toLowerCase() === idOrName.toLowerCase(),
     );
