@@ -14,6 +14,11 @@ import {
 export interface TrackerToolsOptions {
   /** When set, create/update operations require user confirmation before executing. */
   confirmationStore?: ConfirmationStore;
+  /**
+   * Default row limit for `tracker_list_tasks`, `tracker_search_tasks`,
+   * `tracker_list_projects`, and `tracker_list_teams`. Defaults to 50.
+   */
+  queryLimit?: number;
 }
 
 /**
@@ -29,6 +34,8 @@ export interface TrackerToolsOptions {
  * reference data (used to resolve the team for project creation).
  */
 export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOptions): AgentTool[] {
+  const queryLimit = opts?.queryLimit ?? 50;
+
   /** Coerce an unknown field to a display string ("" when absent/non-string). */
   const str = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
 
@@ -175,7 +182,7 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
     label: "Search tasks",
     parameters: Type.Object({ query: Type.String() }),
     execute: async (_id, params, signal) => {
-      const tasks = await databox.searchTasks(params.query, 50, signal);
+      const tasks = await databox.searchTasks(params.query, queryLimit, signal);
       return toolResult(tasks.map(renderTask).join("\n\n") || "No matches.", tasks);
     },
   });
@@ -189,7 +196,7 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
       filters: Type.Optional(Type.Array(Type.String())),
     }),
     execute: async (_id, params, signal) => {
-      const tasks = await databox.listTasks(50, params.filters ?? [], signal);
+      const tasks = await databox.listTasks(queryLimit, params.filters ?? [], signal);
       return toolResult(tasks.map(renderTask).join("\n\n") || "No tasks.", tasks);
     },
   });
@@ -214,7 +221,7 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
     label: "List projects",
     parameters: Type.Object({}),
     execute: async (_id, _params, signal) => {
-      const projects = await databox.listProjects(50, signal);
+      const projects = await databox.listProjects(queryLimit, signal);
       return toolResult(projects.map(renderProject).join("\n\n") || "No projects.", projects);
     },
   });
@@ -330,7 +337,7 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
     label: "List teams",
     parameters: Type.Object({}),
     execute: async (_id, _params, signal) => {
-      const teams = await databox.listTeams(50, signal);
+      const teams = await databox.listTeams(queryLimit, signal);
       return toolResult(teams.map(renderTeam).join("\n\n") || "No teams.", teams);
     },
   });

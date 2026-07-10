@@ -80,6 +80,12 @@ export interface Config {
    * here (see {@link DataboxClient}).
    */
   dbxcliConfig: string;
+  /**
+   * Default row limit for `tracker_list_tasks`, `tracker_search_tasks`,
+   * `tracker_list_projects`, and `tracker_list_teams`. Lower this if large
+   * queries trip the Linear API complexity limit.
+   */
+  dbxcliQueryLimit: number;
 
   /** `proteos` binary (path or name on PATH) for the ProteOS task lane. */
   proteosBin: string;
@@ -321,6 +327,7 @@ export function loadConfig(env: Env = process.env): Config {
 
     dbxcliBin: optional(env, "PPMA_DBXCLI_BIN", "dbxcli"),
     dbxcliConfig: optional(env, "PPMA_DBXCLI_CONFIG", ""),
+    dbxcliQueryLimit: int(env, "PPMA_DBXCLI_QUERY_LIMIT", 100),
 
     proteosBin: optional(env, "PPMA_PROTEOS_BIN", "proteos"),
     proteosUrl: optional(env, "PROTEOS_URL", ""),
