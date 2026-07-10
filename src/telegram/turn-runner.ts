@@ -12,7 +12,7 @@ import type { Config } from "../config.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import type { MetricsCollector } from "../metrics/collector.ts";
 import { type ConfirmationStore, isApproval, isRejection } from "../tools/confirmation.ts";
-import type { TraceRecorder } from "../trace/recorder.ts";
+import { clipPayload, type TraceRecorder } from "../trace/recorder.ts";
 import type { ChatSession } from "./chat-session.ts";
 import type { TelegramClient } from "./client.ts";
 import type { Send } from "./reply.ts";
@@ -28,6 +28,27 @@ function extractToolText(result: unknown): string {
 /** True when the tool result sets terminate:true (stops the agent loop). */
 function isTerminating(result: unknown): boolean {
   return (result as { terminate?: boolean } | undefined)?.terminate === true;
+}
+
+/** Render a tool call's args/result as a fenced JSON block, clipped to a safe size. */
+function formatPayload(value: unknown): string {
+  try {
+    return JSON.stringify(clipPayload(value), null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+/** Format a `tool_execution_start` event as a Telegram status message. */
+function formatToolStart(toolName: string, args: unknown): string {
+  return `🔧 Calling \`${toolName}\`\n\`\`\`json\n${formatPayload(args)}\n\`\`\``;
+}
+
+/** Format a `tool_execution_end` event as a Telegram status message. */
+function formatToolEnd(toolName: string, result: unknown, isError: boolean): string {
+  const text = extractToolText(result) || formatPayload(result);
+  const icon = isError ? "❌" : "✅";
+  return `${icon} \`${toolName}\` ${isError ? "failed" : "done"}\n\`\`\`\n${text}\n\`\`\``;
 }
 
 /** Concatenated text of the most recent assistant message, if any. */
@@ -190,6 +211,29 @@ export class TurnRunner {
         })
       : null;
 
+    // Tool-calling status — send an incremental Telegram message for each tool
+    // call and its result as the turn progresses. Sends are queued (not
+    // awaited inline) so a slow Telegram API call never delays the tool
+    // itself; the queue preserves message order and is drained before the
+    // turn's final reply is sent.
+    let toolStatusQueue = Promise.resolve();
+    const queueToolStatus = (msg: string): void => {
+      toolStatusQueue = toolStatusQueue
+        .then(() => this.deps.send(chatId, [msg]))
+        .catch((error) => {
+          turnLog.withError(error).warn("failed to send tool-status message");
+        });
+    };
+    const unsubscribeToolStatus = this.deps.config.showToolCalls
+      ? this.deps.built.agent.subscribe((event) => {
+          if (event.type === "tool_execution_start") {
+            queueToolStatus(formatToolStart(event.toolName, event.args));
+          } else if (event.type === "tool_execution_end") {
+            queueToolStatus(formatToolEnd(event.toolName, event.result, event.isError));
+          }
+        })
+      : null;
+
     try {
       await this.deps.built.agent.prompt(text);
     } catch (error) {
@@ -207,6 +251,8 @@ export class TurnRunner {
       stopTyping();
       unsubscribe();
       unsubscribeCost?.();
+      unsubscribeToolStatus?.();
+      await toolStatusQueue;
       this.deps.built.agent.beforeToolCall = prevBeforeToolCall;
     }
 
