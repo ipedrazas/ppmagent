@@ -475,9 +475,9 @@ export class DataboxClient {
   /**
    * Get one project by UUID (via `dbxcli get`) or by case-insensitive name (a
    * client-side scan, since projects have no human identifier to `get` by).
-   * `limit` bounds the name scan (dataset cap is 1000).
+   * `limit` bounds the name scan (dataset cap is 100).
    */
-  async getProject(idOrName: string, limit = 1000, signal?: AbortSignal): Promise<DataboxRow> {
+  async getProject(idOrName: string, limit = 100, signal?: AbortSignal): Promise<DataboxRow> {
     if (isUuid(idOrName)) {
       const dataset = await this.datasetAlias("projects", signal);
       return this.run<DataboxRow>(["get", dataset, idOrName], signal);
@@ -508,7 +508,7 @@ export class DataboxClient {
    */
   async resolveTeamId(team: string, signal?: AbortSignal): Promise<string> {
     if (isUuid(team)) return team;
-    const teams = await this.listTeams(1000, signal);
+    const teams = await this.listTeams(100, signal);
     const match = teams.find((t) => {
       const key = typeof t.key === "string" ? t.key : "";
       const name = typeof t.name === "string" ? t.name : "";
@@ -574,9 +574,9 @@ export class DataboxClient {
 
   /**
    * Get one team by UUID (via `dbxcli get`) or by key/name (a client-side scan).
-   * `limit` bounds the scan (dataset cap is 1000).
+   * `limit` bounds the scan (dataset cap is 100).
    */
-  async getTeam(keyOrName: string, limit = 1000, signal?: AbortSignal): Promise<DataboxRow> {
+  async getTeam(keyOrName: string, limit = 100, signal?: AbortSignal): Promise<DataboxRow> {
     if (isUuid(keyOrName)) {
       const dataset = await this.datasetAlias("teams", signal);
       return this.run<DataboxRow>(["get", dataset, keyOrName], signal);
