@@ -242,6 +242,7 @@ export function buildAgent(
     config: config.dbxcliConfig,
     logger,
     maxOutputBytes,
+    queryLimit: config.dbxcliQueryLimit,
   });
   const proteos = new ProteosClient({
     bin: config.proteosBin,
@@ -253,7 +254,10 @@ export function buildAgent(
 
   const tools = [
     ...buildMemoryTools(ppm),
-    ...buildTrackerTools(databox, { confirmationStore: overrides.confirmationStore }),
+    ...buildTrackerTools(databox, {
+      confirmationStore: overrides.confirmationStore,
+      queryLimit: config.dbxcliQueryLimit,
+    }),
     ...buildProteosTools(proteos, {
       onTaskDispatched: overrides.onTaskDispatched,
       confirmationStore: overrides.confirmationStore,
