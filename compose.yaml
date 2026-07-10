@@ -12,7 +12,10 @@ services:
       context: .
       args:
         PPM_VERSION: ${PPM_VERSION:-latest}
-        DBXCLI_VERSION: ${DBXCLI_VERSION:-v0.1.10}
+        # Must stay in sync with the Dockerfile ARG default: older dbxcli
+        # releases use a different --filter grammar than the tracker tools
+        # advertise, so a skewed pin breaks every filtered list call.
+        DBXCLI_VERSION: ${DBXCLI_VERSION:-v0.1.12}
     restart: unless-stopped
     env_file:
       - .env

@@ -1,7 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, toolResult } from "../tool-helpers.ts";
-import { buildWriteArgs, type PpmClient } from "./ppm.ts";
+import { buildWriteArgs, type PpmClient, PpmError } from "./ppm.ts";
 
 /**
  * The closed set of writable entry types. Enforced in the tool schema so the
@@ -53,8 +53,23 @@ export function buildMemoryTools(ppm: PpmClient): AgentTool[] {
       name: Type.Optional(Type.String()),
     }),
     execute: async (_id, params, signal) => {
-      const env = await ppm.read(params.project, { type: params.type, name: params.name }, signal);
-      return toolResult(env.message, env.data);
+      try {
+        const env = await ppm.read(
+          params.project,
+          { type: params.type, name: params.name },
+          signal,
+        );
+        return toolResult(env.message, env.data);
+      } catch (error) {
+        // A miss is usually a guessed slug; point at memory_list so the next
+        // call self-corrects instead of guessing again.
+        if (error instanceof PpmError && /not found/i.test(error.message)) {
+          throw new PpmError(
+            `${error.message} — call memory_list (no arguments) to see the available project slugs`,
+          );
+        }
+        throw error;
+      }
     },
   });
 

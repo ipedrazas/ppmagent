@@ -246,7 +246,7 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
     label: "Get project",
     parameters: Type.Object({ ref: Type.String() }),
     execute: async (_id, params, signal) => {
-      const project = await databox.getProject(params.ref, 1000, signal);
+      const project = await databox.getProject(params.ref, queryLimit, signal);
       return toolResult(renderProject(project), project);
     },
   });
