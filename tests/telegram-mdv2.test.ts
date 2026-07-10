@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { toMarkdownV2 } from "../src/telegram/mdv2.ts";
+import { toMarkdownV2, toMarkdownV2Chunks } from "../src/telegram/mdv2.ts";
 
 describe("toMarkdownV2", () => {
   test("passes text with no special chars unchanged", () => {
@@ -72,5 +72,77 @@ describe("toMarkdownV2", () => {
     expect(result).toContain("`fn(x)`");
     // Outside inline code: ( ) escaped; . escaped
     expect(result).toContain("just fn\\(x\\)\\.");
+  });
+});
+
+describe("toMarkdownV2Chunks", () => {
+  test("returns a single chunk for short text, matching toMarkdownV2", () => {
+    const text = "Hello **world**. Call `fn()`.";
+    const chunks = toMarkdownV2Chunks(text);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.formatted).toBe(toMarkdownV2(text));
+    expect(chunks[0]?.raw).toBe(text);
+  });
+
+  test("never splits inside a fenced code block", () => {
+    // A code block that alone is well under maxLen, but pushes the running
+    // chunk over the limit when appended to preceding prose.
+    const prose = "x".repeat(4000);
+    const code = "```\nconst a = 1;\nconst b = 2;\n```";
+    const text = `${prose}\n${code}`;
+    const chunks = toMarkdownV2Chunks(text, 4096);
+    for (const { formatted } of chunks) {
+      // Every chunk must have balanced fences: either no ``` at all, or an
+      // even number (each opened fence is also closed within the chunk).
+      const fenceCount = (formatted.match(/```/g) ?? []).length;
+      expect(fenceCount % 2).toBe(0);
+    }
+    // The code block itself must appear intact, unescaped apart from ` and \.
+    expect(chunks.some((c) => c.formatted.includes("const a = 1;"))).toBe(true);
+  });
+
+  test("every chunk stays within maxLen even when escaping inflates length", () => {
+    // Dense reserved characters: every char doubles in length once escaped.
+    const text = "!.".repeat(3000);
+    const chunks = toMarkdownV2Chunks(text, 4096);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const { formatted } of chunks) {
+      expect(formatted.length).toBeLessThanOrEqual(4096);
+    }
+  });
+
+  test("splitting a raw chunk never leaves a dangling escape backslash", () => {
+    const text = "!.".repeat(3000);
+    const chunks = toMarkdownV2Chunks(text, 4096);
+    for (const { formatted } of chunks) {
+      // A trailing lone backslash would mean the split cut between `\` and
+      // the character it escapes.
+      expect(formatted.endsWith("\\")).toBe(false);
+    }
+  });
+
+  test("splitting loses at most the whitespace separator between chunks", () => {
+    const text = `${"a".repeat(3000)}\n${"b".repeat(3000)}`;
+    const chunks = toMarkdownV2Chunks(text, 4096);
+    expect(chunks.length).toBeGreaterThan(1);
+    // No non-whitespace content is dropped; only the split-point separator
+    // (a newline/space consumed by the split) is not carried into either chunk.
+    const rejoinedNonWhitespace = chunks
+      .map((c) => c.raw)
+      .join("")
+      .replace(/\s/g, "");
+    expect(rejoinedNonWhitespace).toBe(text.replace(/\s/g, ""));
+  });
+
+  test("splits an oversized single code block into multiple balanced fences", () => {
+    const bigCode = Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n");
+    const text = `\`\`\`\n${bigCode}\n\`\`\``;
+    const chunks = toMarkdownV2Chunks(text, 200);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const { formatted } of chunks) {
+      expect(formatted.length).toBeLessThanOrEqual(200);
+      expect(formatted.startsWith("```")).toBe(true);
+      expect(formatted.endsWith("```")).toBe(true);
+    }
   });
 });
