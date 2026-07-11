@@ -23,8 +23,8 @@
     "loglayer": "^9.3.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.2",
+    "@biomejs/biome": "2.5.3",
     "@types/bun": "latest",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   }
 }
