@@ -22,7 +22,7 @@ export interface PreflightResults {
  * expects FIELD:OP:VALUE) rejects every filtered list call, which the agent
  * cannot talk its way around — so version skew is surfaced loudly at boot.
  */
-export const DBXCLI_MIN_VERSION = "0.1.12";
+export const DBXCLI_MIN_VERSION = "0.1.13";
 
 /** Compare dotted numeric versions; negative when a < b. */
 function compareVersions(a: string, b: string): number {
