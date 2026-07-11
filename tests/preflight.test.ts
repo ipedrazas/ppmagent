@@ -63,8 +63,8 @@ describe("dbxcli version skew warning", () => {
     dir = await mkdtemp(join(tmpdir(), "preflight-test-"));
     oldBin = join(dir, "dbxcli-old");
     newBin = join(dir, "dbxcli-new");
-    await writeFile(oldBin, '#!/bin/sh\necho "dbxcli 0.1.10"\n');
-    await writeFile(newBin, '#!/bin/sh\necho "dbxcli 0.1.12"\n');
+    await writeFile(oldBin, '#!/bin/sh\necho "dbxcli 0.1.12"\n');
+    await writeFile(newBin, '#!/bin/sh\necho "dbxcli 0.1.13"\n');
     await chmod(oldBin, 0o755);
     await chmod(newBin, 0o755);
   });
