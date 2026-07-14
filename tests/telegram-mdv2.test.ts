@@ -73,6 +73,55 @@ describe("toMarkdownV2", () => {
     // Outside inline code: ( ) escaped; . escaped
     expect(result).toContain("just fn\\(x\\)\\.");
   });
+
+  test("translates bold to a single-asterisk entity", () => {
+    expect(toMarkdownV2("**bold** and __also bold__")).toBe("*bold* and *also bold*");
+  });
+
+  test("translates italic to an underscore entity", () => {
+    expect(toMarkdownV2("*italic* stays")).toBe("_italic_ stays");
+    expect(toMarkdownV2("some _italic_ word")).toBe("some _italic_ word");
+  });
+
+  test("keeps snake_case and stray asterisks literal", () => {
+    expect(toMarkdownV2("a_b and my_var_name")).toBe("a\\_b and my\\_var\\_name");
+    expect(toMarkdownV2("2 * 3 = 6")).toBe("2 \\* 3 \\= 6");
+  });
+
+  test("translates strikethrough to a single-tilde entity", () => {
+    expect(toMarkdownV2("~~gone~~ kept")).toBe("~gone~ kept");
+  });
+
+  test("renders headings as bold lines", () => {
+    expect(toMarkdownV2("# Status\n\nbody.")).toBe("*Status*\n\nbody\\.");
+    expect(toMarkdownV2("## Sub **head**")).toBe("*Sub head*");
+    // No space after # → hashtag, not a heading
+    expect(toMarkdownV2("#hashtag")).toBe("\\#hashtag");
+  });
+
+  test("preserves links, escaping only the URL's reserved chars", () => {
+    expect(toMarkdownV2("[docs](https://a.co/q?y=1) end.")).toBe(
+      "[docs](https://a.co/q?y=1) end\\.",
+    );
+    // Wikipedia-style URL with balanced parens: ')' escaped inside the URL
+    expect(toMarkdownV2("[wiki](https://en.wikipedia.org/wiki/Foo_(bar))")).toBe(
+      "[wiki](https://en.wikipedia.org/wiki/Foo_(bar\\))",
+    );
+  });
+
+  test("supports italic nested inside bold", () => {
+    expect(toMarkdownV2("**bold _inner_ text**")).toBe("*bold _inner_ text*");
+  });
+
+  test("drops the style marker when an entity contains inline code", () => {
+    // MarkdownV2 forbids code inside other entities — keep the code span,
+    // drop the bold, rather than have Telegram reject the whole message.
+    expect(toMarkdownV2("**Fixed `getTask`** done.")).toBe("Fixed `getTask` done\\.");
+  });
+
+  test("keeps a heading containing inline code as a literal line", () => {
+    expect(toMarkdownV2("# Head `code`")).toBe("\\# Head `code`");
+  });
 });
 
 describe("toMarkdownV2Chunks", () => {
