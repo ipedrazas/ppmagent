@@ -106,6 +106,14 @@ export class ChatSession {
     this.state.name = name;
   }
 
+  /** Toggled via `/describe` — read by the turn runner to inject the reasoning prompt. */
+  get describeEnabled(): boolean {
+    return this.state.describeEnabled ?? false;
+  }
+  set describeEnabled(value: boolean) {
+    this.state.describeEnabled = value;
+  }
+
   /** The live transcript (the agent's message array). */
   get messages() {
     return this.built.agent.state.messages;
