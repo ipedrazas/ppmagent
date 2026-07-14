@@ -21,6 +21,8 @@ export interface SessionState {
   /** Optional human-friendly label set via `/name`. */
   name?: string;
   activeProject?: string;
+  /** Toggled via `/describe`; prepends a reasoning-detail prompt to each turn. */
+  describeEnabled?: boolean;
   messages: AgentMessage[];
   /** Epoch millis; set at creation, never changed. */
   createdAt: number;
@@ -40,7 +42,14 @@ export interface SessionSummary {
 
 export function newSession(name?: string): SessionState {
   const now = Date.now();
-  return { sessionId: uuidv7(), name, messages: [], createdAt: now, updatedAt: now };
+  return {
+    sessionId: uuidv7(),
+    name,
+    describeEnabled: false,
+    messages: [],
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 /**
@@ -100,6 +109,7 @@ export class SessionStore {
         sessionId: p.sessionId,
         name: p.name,
         activeProject: p.activeProject,
+        describeEnabled: p.describeEnabled ?? false,
         messages: p.messages,
         createdAt: p.createdAt ?? now,
         updatedAt: p.updatedAt ?? now,

@@ -112,3 +112,55 @@ describe("CommandRouter.route", () => {
     expect(await router.route(1, "/unknown@mybot")).toBeNull();
   });
 });
+
+describe("CommandRouter — /describe", () => {
+  test("defaults to off", async () => {
+    const { session } = makeRouter();
+    expect(session.describeEnabled).toBe(false);
+  });
+
+  test("with no argument, toggles the current state", async () => {
+    const { router, session } = makeRouter();
+    let replies = await router.route(1, "/describe");
+    expect(session.describeEnabled).toBe(true);
+    expect(replies?.[0]).toContain("ON");
+
+    replies = await router.route(1, "/describe");
+    expect(session.describeEnabled).toBe(false);
+    expect(replies?.[0]).toContain("OFF");
+  });
+
+  test("/describe on enables it explicitly", async () => {
+    const { router, session } = makeRouter();
+    const replies = await router.route(1, "/describe on");
+    expect(session.describeEnabled).toBe(true);
+    expect(replies?.[0]).toContain("ON");
+  });
+
+  test("/describe off disables it explicitly", async () => {
+    const { router, session } = makeRouter();
+    await router.route(1, "/describe on");
+    const replies = await router.route(1, "/describe off");
+    expect(session.describeEnabled).toBe(false);
+    expect(replies?.[0]).toContain("OFF");
+  });
+
+  test("/describe@botname (group chat form) toggles it", async () => {
+    const { router, session } = makeRouter();
+    await router.route(1, "/describe@mybot on");
+    expect(session.describeEnabled).toBe(true);
+  });
+
+  test("an invalid argument reports usage without changing state", async () => {
+    const { router, session } = makeRouter();
+    const replies = await router.route(1, "/describe maybe");
+    expect(replies?.[0]).toContain("Usage: /describe");
+    expect(session.describeEnabled).toBe(false);
+  });
+
+  test("/help lists /describe", async () => {
+    const { router } = makeRouter();
+    const replies = await router.route(1, "/help");
+    expect(replies?.[0]).toContain("/describe");
+  });
+});

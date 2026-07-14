@@ -37,6 +37,7 @@ function helpText(): string {
     "/new [name] — start a fresh session",
     "/name <name> — label current session",
     "/session — show session details",
+    "/describe [on|off] — toggle reasoning-detail prompts for tool calls",
     "/tools — report CLI tool versions",
     "/resume [id|name] — list or switch sessions",
     "/search [query] — search saved sessions (project:<slug> or name fragment)",
@@ -144,6 +145,10 @@ export class CommandRouter {
       return this.reply(chatId, session.sessionReport());
     }
 
+    if (cmd === "describe") {
+      return this.reply(chatId, this.describeCommand(arg));
+    }
+
     if (cmd === "tools") {
       this.log.withMetadata({ chatId }).info("tools reported");
       return this.reply(chatId, await this.toolsReport());
@@ -183,6 +188,30 @@ export class CommandRouter {
   private async reply(chatId: number, text: string): Promise<string[]> {
     await this.deps.send(chatId, [text]);
     return [text];
+  }
+
+  /**
+   * Handle `/describe [on|off]`. With no argument, toggles the current state;
+   * "on"/"off" (case-insensitive) set it explicitly. Persists the change so it
+   * survives a restart.
+   */
+  private describeCommand(arg: string): string {
+    const { session } = this.deps;
+    const normalized = arg.trim().toLowerCase();
+    if (normalized === "on") {
+      session.describeEnabled = true;
+    } else if (normalized === "off") {
+      session.describeEnabled = false;
+    } else if (normalized === "") {
+      session.describeEnabled = !session.describeEnabled;
+    } else {
+      return "Usage: /describe, /describe on, or /describe off";
+    }
+    session.persist();
+    this.log
+      .withMetadata({ describeEnabled: session.describeEnabled })
+      .info("describe mode toggled");
+    return `Describe mode is now ${session.describeEnabled ? "ON" : "OFF"}.`;
   }
 
   /**
