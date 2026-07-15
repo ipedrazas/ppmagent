@@ -26,6 +26,23 @@ describe("SessionStore", () => {
     expect(loaded?.activeProject).toBe("onboarding");
   });
 
+  test("newSession defaults describeEnabled to false, and it round-trips through disk", () => {
+    const store = freshStore("describe-roundtrip");
+    const state = newSession("kickoff");
+    expect(state.describeEnabled).toBe(false);
+    state.describeEnabled = true;
+    store.save(state);
+    expect(store.load()?.describeEnabled).toBe(true);
+  });
+
+  test("a legacy session on disk with no describeEnabled field loads as false", () => {
+    mkdirSync(join(dir, "legacy-describe"), { recursive: true });
+    const legacy = { sessionId: "legacy-2", messages: [] };
+    writeFileSync(join(dir, "legacy-describe", "session.json"), JSON.stringify(legacy));
+    const store = freshStore("legacy-describe");
+    expect(store.load()?.describeEnabled).toBe(false);
+  });
+
   test("keeps multiple sessions and lists them newest-first", async () => {
     const store = freshStore("multi");
     const a = newSession("alpha");
