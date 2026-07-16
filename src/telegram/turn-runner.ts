@@ -7,7 +7,6 @@
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { BuiltAgent } from "../agent.ts";
-import { contextTokens } from "../compaction.ts";
 import type { Config } from "../config.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import type { MetricsCollector } from "../metrics/collector.ts";
@@ -199,26 +198,27 @@ export class TurnRunner {
         if (t) outbound.push(t);
       }
     });
-    const sliceTokens = () => this.deps.built.memoryContext.sliceTokens();
-    const tokensBefore = contextTokens(session.messages) + sliceTokens();
 
-    // Per-turn cost limit — abort mid-turn when the estimated spend exceeds the threshold.
+    // Per-turn cost limit — abort mid-turn once the accumulated provider-reported
+    // spend for this turn exceeds the threshold.
     let turnCostExceeded = false;
-    const costMetrics = this.deps.config.turnMaxCostUsd > 0 ? this.deps.metrics : undefined;
-    const unsubscribeCost = costMetrics
-      ? this.deps.built.agent.subscribe((event) => {
-          if (event.type !== "turn_end") return;
-          const tokensNow = contextTokens(session.messages) + sliceTokens();
-          const cost = costMetrics.estimateTurnCostUsd(tokensBefore, tokensNow);
-          if (cost > this.deps.config.turnMaxCostUsd) {
-            turnCostExceeded = true;
-            turnLog
-              .withMetadata({ cost, limit: this.deps.config.turnMaxCostUsd })
-              .warn("per-turn cost limit exceeded");
-            this.deps.built.agent.abort();
-          }
-        })
-      : null;
+    let turnCostSoFar = 0;
+    const unsubscribeCost =
+      this.deps.config.turnMaxCostUsd > 0
+        ? this.deps.built.agent.subscribe((event) => {
+            if (event.type !== "turn_end") return;
+            const { message } = event;
+            if (!("role" in message) || message.role !== "assistant") return;
+            turnCostSoFar += message.usage.cost.total;
+            if (turnCostSoFar > this.deps.config.turnMaxCostUsd) {
+              turnCostExceeded = true;
+              turnLog
+                .withMetadata({ cost: turnCostSoFar, limit: this.deps.config.turnMaxCostUsd })
+                .warn("per-turn cost limit exceeded");
+              this.deps.built.agent.abort();
+            }
+          })
+        : null;
 
     // Tool-calling status — send an incremental Telegram message for each tool
     // call and its result as the turn progresses. Sends are queued (not
@@ -251,12 +251,7 @@ export class TurnRunner {
       const durationMs = Math.round(performance.now() - startedAt);
       turnLog.withError(error).error("agent turn failed");
       recorder?.record({ type: "turn_end", durationMs, error: String(error) });
-      this.deps.metrics?.recordTurn({
-        durationMs,
-        tokensBefore,
-        tokensAfter: contextTokens(session.messages) + sliceTokens(),
-        error: true,
-      });
+      this.deps.metrics?.recordTurn({ durationMs, error: true });
       throw error;
     } finally {
       stopTyping();
@@ -267,7 +262,6 @@ export class TurnRunner {
       this.deps.built.agent.beforeToolCall = prevBeforeToolCall;
     }
 
-    const tokensAfter = contextTokens(session.messages) + sliceTokens();
     const assistant = lastAssistantText(session.messages);
     if (assistant) outbound.push(assistant);
 
@@ -288,7 +282,7 @@ export class TurnRunner {
     await this.deps.send(chatId, outbound);
     const durationMs = Math.round(performance.now() - startedAt);
     recorder?.record({ type: "turn_end", durationMs, replies: outbound.length });
-    this.deps.metrics?.recordTurn({ durationMs, tokensBefore, tokensAfter });
+    this.deps.metrics?.recordTurn({ durationMs });
     turnLog.withMetadata({ replies: outbound.length, durationMs }).info("message handled");
     return outbound;
   }

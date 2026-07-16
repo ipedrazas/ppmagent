@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
+import type { Usage } from "@earendil-works/pi-ai";
 import type { BuiltAgent } from "../src/agent.ts";
 import { MetricsCollector } from "../src/metrics/collector.ts";
 import type { SessionStore } from "../src/session/store.ts";
@@ -13,6 +14,18 @@ import { ChatSession } from "../src/telegram/chat-session.ts";
 import type { TelegramClient } from "../src/telegram/client.ts";
 import { TurnRunner } from "../src/telegram/turn-runner.ts";
 import { makeTestConfig } from "./support/config.ts";
+
+/** Synthetic provider-reported usage carrying a given total cost, for tests. */
+function usageWithCost(totalCostUsd: number, totalTokens = 0): Usage {
+  return {
+    input: totalTokens,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens,
+    cost: { input: totalCostUsd, output: 0, cacheRead: 0, cacheWrite: 0, total: totalCostUsd },
+  };
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -129,9 +142,9 @@ function makeTurnRunner(
 
 describe("TurnRunner — session cost limit", () => {
   test("refuses the turn when session cost has reached the cap", async () => {
-    // Record two turns that together cost ~$6 (1M tokens × $6/M for sonnet-4-6)
-    const metrics = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
-    metrics.recordTurn({ durationMs: 100, tokensBefore: 0, tokensAfter: 1_000_000 });
+    // Provider-reported usage accumulating to $6 total.
+    const metrics = new MetricsCollector();
+    metrics.recordUsage(usageWithCost(6, 1_000_000));
 
     const { built, promptCalled } = makeBuilt();
     const { runner, sent } = makeTurnRunner(built, {
@@ -146,9 +159,8 @@ describe("TurnRunner — session cost limit", () => {
   });
 
   test("allows the turn when session cost is below the cap", async () => {
-    const metrics = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
-    // 100k tokens = $0.60
-    metrics.recordTurn({ durationMs: 100, tokensBefore: 0, tokensAfter: 100_000 });
+    const metrics = new MetricsCollector();
+    metrics.recordUsage(usageWithCost(0.6, 100_000));
 
     const { built, promptCalled } = makeBuilt();
     const { runner } = makeTurnRunner(built, {
@@ -161,8 +173,8 @@ describe("TurnRunner — session cost limit", () => {
   });
 
   test("does not check limit when sessionMaxCostUsd is 0 (unlimited)", async () => {
-    const metrics = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
-    metrics.recordTurn({ durationMs: 100, tokensBefore: 0, tokensAfter: 10_000_000 });
+    const metrics = new MetricsCollector();
+    metrics.recordUsage(usageWithCost(60, 10_000_000));
 
     const { built, promptCalled } = makeBuilt();
     const { runner } = makeTurnRunner(built, {
@@ -289,10 +301,9 @@ describe("TurnRunner — per-turn tool budget", () => {
 // ── 3. Per-turn cost limit ────────────────────────────────────────────────────
 
 describe("TurnRunner — per-turn cost limit", () => {
-  test("subscribes a turn_end listener when turnMaxCostUsd > 0 and metrics is set", async () => {
+  test("subscribes a turn_end listener when turnMaxCostUsd > 0", async () => {
     let subscribeCallCount = 0;
 
-    const metrics = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
     const { built } = makeBuilt({
       onSubscribe: () => {
         subscribeCallCount++;
@@ -300,7 +311,6 @@ describe("TurnRunner — per-turn cost limit", () => {
     });
 
     const { runner } = makeTurnRunner(built, {
-      metrics,
       configOverrides: { turnMaxCostUsd: 0.5 },
     });
 
@@ -311,7 +321,6 @@ describe("TurnRunner — per-turn cost limit", () => {
 
   test("does not subscribe a cost listener when turnMaxCostUsd is 0 (unlimited)", async () => {
     let subscribeCallCount = 0;
-    const metrics = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
     const { built } = makeBuilt({
       onSubscribe: () => {
         subscribeCallCount++;
@@ -319,7 +328,6 @@ describe("TurnRunner — per-turn cost limit", () => {
     });
 
     const { runner } = makeTurnRunner(built, {
-      metrics,
       configOverrides: { turnMaxCostUsd: 0 },
     });
 
@@ -343,31 +351,23 @@ describe("TurnRunner — per-turn cost limit", () => {
       abortCalled = true;
     };
 
-    // Spy on estimateTurnCostUsd via the metrics instance
-    // We need estimateTurnCostUsd to return > 0.01 (our limit)
-    // Since session messages are empty (0 tokens), we use a provider with a high cost
-    // and simulate token growth by patching memoryContext.sliceTokens
-    const highCostMetrics = new MetricsCollector({
-      provider: "anthropic",
-      model: "claude-opus-4-8", // $30/M
-    });
-
     const { runner } = makeTurnRunner(built, {
-      metrics: highCostMetrics,
       configOverrides: { turnMaxCostUsd: 0.001 }, // very low limit
     });
 
-    // Start the run (it captures tokensBefore = 0 and sets up the cost listener)
     const runPromise = runner.run(1, "hi");
 
-    // Simulate token growth after the turn started: sliceTokens now reports
-    // 1000 tokens, so estimateTurnCostUsd(0, 1000) = 1000/1M * 30 = $0.03 > $0.001
-    built.memoryContext.sliceTokens = () => 1000;
-
-    // Fire a turn_end event to trigger the cost check
+    // Fire a turn_end event carrying provider-reported cost above the limit.
     const sig = new AbortController().signal;
     for (const l of listeners) {
-      l({ type: "turn_end", message: {}, toolResults: [] }, sig);
+      l(
+        {
+          type: "turn_end",
+          message: { role: "assistant", usage: { cost: { total: 0.03 } } },
+          toolResults: [],
+        },
+        sig,
+      );
     }
 
     await runPromise;

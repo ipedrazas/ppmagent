@@ -69,11 +69,7 @@ async function main(): Promise<void> {
   // Session traces live beside the sessions themselves; analyzed offline with
   // `bun run trace` (src/trace/extract.ts).
   const recorder = new TraceRecorder(join(dirname(config.sessionFile), "traces"), logger);
-  const metrics = new MetricsCollector({
-    logger,
-    provider: config.provider,
-    model: config.model,
-  });
+  const metrics = new MetricsCollector({ logger });
 
   // The watcher holder breaks the init cycle: buildAgent needs onTaskDispatched,
   // but ProteosTaskWatcher needs built.proteos. The holder is set before any turn

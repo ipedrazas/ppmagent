@@ -9,7 +9,7 @@ function makeRequest(path: string, method = "GET"): Request {
 describe("handleMetricsRequest", () => {
   test("GET /metrics returns 200 with JSON snapshot", async () => {
     const collector = new MetricsCollector();
-    collector.recordTurn({ durationMs: 42, tokensBefore: 100, tokensAfter: 200 });
+    collector.recordTurn({ durationMs: 42 });
     const res = handleMetricsRequest(makeRequest("/metrics"), collector);
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
@@ -22,14 +22,22 @@ describe("handleMetricsRequest", () => {
 
   test("GET /metrics reflects recorded data", async () => {
     const collector = new MetricsCollector();
-    collector.recordTurn({ durationMs: 100, tokensBefore: 0, tokensAfter: 500 });
+    collector.recordTurn({ durationMs: 100 });
+    collector.recordUsage({
+      input: 500,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 500,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    });
     const res = handleMetricsRequest(makeRequest("/metrics"), collector);
     const body = (await res.json()) as {
       turns: { total: number };
-      tokens: { estimatedTotal: number };
+      tokens: { total: number };
     };
     expect(body.turns.total).toBe(1);
-    expect(body.tokens.estimatedTotal).toBe(500);
+    expect(body.tokens.total).toBe(500);
   });
 
   test("returns 404 for unknown paths", () => {
