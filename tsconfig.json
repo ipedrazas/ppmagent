@@ -15,5 +15,5 @@
     "noImplicitOverride": true,
     "types": ["bun"]
   },
-  "include": ["src", "tests"]
+  "include": ["src", "tests", "evals"]
 }

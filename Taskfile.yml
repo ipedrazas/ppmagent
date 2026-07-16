@@ -50,6 +50,11 @@ tasks:
     cmds:
       - bun test
 
+  evals:
+    desc: Run the real-model eval suite (needs `ppm` + a real provider API key; costs tokens, never run in CI)
+    cmds:
+      - bun evals/run.ts
+
   dev:
     desc: Run the agent in watch mode
     cmds:
