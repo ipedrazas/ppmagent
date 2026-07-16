@@ -12,6 +12,7 @@
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
     "trace": "bun src/trace/extract.ts",
+    "evals": "bun evals/run.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "lint": "biome check .",
