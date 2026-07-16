@@ -175,6 +175,50 @@ export function taskRef(row: DataboxRow): string {
   return typeof row.id === "string" ? row.id : "";
 }
 
+/** A human task reference like `TAV-41`: a team key followed by `-<number>`. */
+const TASK_REF_RE = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
+
+/** `status:<value>` or `status=<value>`, case-insensitive on the `status` keyword. */
+const STATUS_PREFIX_RE = /^status\s*[:=]\s*(.+)$/i;
+
+/**
+ * Default Linear-style issue workflow states. Case-insensitive membership check
+ * for a bare query that names a status rather than free text (e.g. "Backlog").
+ * Not exhaustive of every workspace's custom states — a miss here just falls
+ * through to full-text search, so it costs an optimization, not correctness.
+ */
+const WORKFLOW_STATUS_WORDS = new Set([
+  "backlog",
+  "todo",
+  "in progress",
+  "in review",
+  "done",
+  "canceled",
+  "cancelled",
+  "duplicate",
+  "triage",
+]);
+
+export type SearchQueryClassification =
+  | { kind: "ref"; ref: string }
+  | { kind: "status"; status: string }
+  | { kind: "text"; query: string };
+
+/**
+ * Classify a `tracker_search_tasks` query so the tool layer can route ref
+ * lookups and status filters to the cheap `dbxcli get`/`list` paths instead of
+ * `dbxcli search` (full-text search), which is 5-10x slower and unnecessary
+ * for either case (TAV-91).
+ */
+export function classifySearchQuery(rawQuery: string): SearchQueryClassification {
+  const query = rawQuery.trim();
+  if (TASK_REF_RE.test(query)) return { kind: "ref", ref: query };
+  const statusPrefix = query.match(STATUS_PREFIX_RE);
+  if (statusPrefix) return { kind: "status", status: (statusPrefix[1] ?? "").trim() };
+  if (WORKFLOW_STATUS_WORDS.has(query.toLowerCase())) return { kind: "status", status: query };
+  return { kind: "text", query };
+}
+
 /**
  * Build the `create_issue` action params. Pure. `team_id` is sent only when an
  * explicit override is given; otherwise Databox pins/injects it server-side.
@@ -489,19 +533,38 @@ export class DataboxClient {
   }
 
   /**
-   * Get one project by UUID (via `dbxcli get`) or by case-insensitive name (a
-   * client-side scan, since projects have no human identifier to `get` by).
-   * `limit` bounds the name scan (dataset cap is 100).
+   * Get one project by UUID (via `dbxcli get`) or by case-insensitive name.
+   * Name lookup goes through `dbxcli search` first — the server resolves the
+   * name, so it works regardless of how many projects exist — and falls back
+   * to a client-side list scan (bounded by `limit`; dataset cap is 100) when
+   * search errors or returns no exact match.
    */
   async getProject(
     idOrName: string,
     limit = this.defaultLimit,
     signal?: AbortSignal,
   ): Promise<DataboxRow> {
+    const dataset = await this.datasetAlias("projects", signal);
     if (isUuid(idOrName)) {
-      const dataset = await this.datasetAlias("projects", signal);
       return this.run<DataboxRow>(["get", dataset, idOrName], signal);
     }
+
+    const byName = (projects: DataboxRow[]) =>
+      projects.find(
+        (p) => typeof p.name === "string" && p.name.toLowerCase() === idOrName.toLowerCase(),
+      );
+
+    try {
+      const res = await this.run<ListResponse<DataboxRow>>(
+        ["search", dataset, validateSearchQuery(idOrName, "project"), "--limit", String(limit)],
+        signal,
+      );
+      const match = byName(res.items ?? []);
+      if (match) return match;
+    } catch {
+      // Fall through to the list scan; its errors carry the useful message.
+    }
+
     let projects: DataboxRow[];
     try {
       projects = await this.listProjects(limit, signal);
@@ -509,14 +572,12 @@ export class DataboxClient {
       if (error instanceof DataboxError && /complexity/i.test(error.message)) {
         throw new DataboxError(
           `looking up project "${idOrName}" by name exceeded the Linear API complexity limit; ` +
-            "use the project UUID instead",
+            "use the project UUID instead (tracker_list_projects shows ids)",
         );
       }
       throw error;
     }
-    const match = projects.find(
-      (p) => typeof p.name === "string" && p.name.toLowerCase() === idOrName.toLowerCase(),
-    );
+    const match = byName(projects);
     if (!match) throw new DataboxError(`no project found matching ${idOrName}`);
     return match;
   }

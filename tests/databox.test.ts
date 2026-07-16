@@ -4,6 +4,7 @@ import {
   buildCreateProjectParams,
   buildUpdateProjectParams,
   buildUpdateTaskParams,
+  classifySearchQuery,
   isUuid,
   refFromUrl,
   taskRef,
@@ -110,6 +111,44 @@ describe("buildUpdateTaskParams", () => {
       project_id: "proj-uuid",
       label_ids: ["bug-uuid"],
       priority: 1,
+    });
+  });
+});
+
+describe("classifySearchQuery", () => {
+  test("classifies a human task reference as a ref lookup", () => {
+    expect(classifySearchQuery("TAV-41")).toEqual({ kind: "ref", ref: "TAV-41" });
+    expect(classifySearchQuery("  tav-41  ")).toEqual({ kind: "ref", ref: "tav-41" });
+    expect(classifySearchQuery("ENG-123")).toEqual({ kind: "ref", ref: "ENG-123" });
+  });
+
+  test("classifies a status:value / status=value query as a status filter", () => {
+    expect(classifySearchQuery("status:Backlog")).toEqual({ kind: "status", status: "Backlog" });
+    expect(classifySearchQuery("status: Backlog")).toEqual({ kind: "status", status: "Backlog" });
+    expect(classifySearchQuery("STATUS=In Progress")).toEqual({
+      kind: "status",
+      status: "In Progress",
+    });
+  });
+
+  test("classifies a bare known workflow status word as a status filter", () => {
+    expect(classifySearchQuery("Backlog")).toEqual({ kind: "status", status: "Backlog" });
+    expect(classifySearchQuery("done")).toEqual({ kind: "status", status: "done" });
+    expect(classifySearchQuery("In Progress")).toEqual({ kind: "status", status: "In Progress" });
+  });
+
+  test("falls back to full-text search for everything else", () => {
+    expect(classifySearchQuery("fix login bug")).toEqual({
+      kind: "text",
+      query: "fix login bug",
+    });
+    expect(classifySearchQuery("TAV-41 fix bug")).toEqual({
+      kind: "text",
+      query: "TAV-41 fix bug",
+    });
+    expect(classifySearchQuery("nonexistentstatusword")).toEqual({
+      kind: "text",
+      query: "nonexistentstatusword",
     });
   });
 });

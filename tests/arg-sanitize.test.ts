@@ -82,8 +82,9 @@ describe("validateFreeText", () => {
     expect(() => validateFreeText("abc\x00", "content")).toThrow(ArgInjectionError);
   });
 
-  test("rejects newlines", () => {
-    expect(() => validateFreeText("line1\nline2", "content")).toThrow(ArgInjectionError);
+  test("accepts multi-line content (argv is a spawn array, no shell)", () => {
+    const msg = "Implement TAV-96.\n\nWorkflow:\n\t- checkout main\n\t- create branch";
+    expect(validateFreeText(msg, "prompt")).toBe(msg);
   });
 });
 
@@ -300,5 +301,28 @@ describe("validateFilter", () => {
 
   test("rejects control characters", () => {
     expect(() => validateFilter("status=Done\n--flag")).toThrow(ArgInjectionError);
+  });
+
+  test("accepts every documented operator, with or without spaces", () => {
+    expect(validateFilter("status~progress")).toBe("status~progress");
+    expect(validateFilter("status!~progress")).toBe("status!~progress");
+    expect(validateFilter("status = Backlog")).toBe("status = Backlog");
+    expect(validateFilter("labels nin bug,urgent")).toBe("labels nin bug,urgent");
+    expect(validateFilter("project_id=25afba6f-32b0-45c5-868b-67db252f4950")).toBe(
+      "project_id=25afba6f-32b0-45c5-868b-67db252f4950",
+    );
+  });
+
+  test("rejects clauses that do not match the filter grammar", () => {
+    // The exact malformed shapes the agent tried in session logs (TAV backlog).
+    expect(() => validateFilter("status:Backlog")).toThrow(ArgInjectionError);
+    expect(() => validateFilter("status in")).toThrow(ArgInjectionError);
+    expect(() => validateFilter("status_in Backlog")).toThrow(ArgInjectionError);
+    expect(() => validateFilter('["status" "Backlog"]')).toThrow(ArgInjectionError);
+    expect(() => validateFilter("Backlog")).toThrow(ArgInjectionError);
+  });
+
+  test("grammar rejection names the expected syntax", () => {
+    expect(() => validateFilter("status:Backlog")).toThrow(/field<op>value/);
   });
 });

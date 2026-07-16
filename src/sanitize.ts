@@ -73,15 +73,17 @@ export function validateArg(value: string, label: string): string {
  *
  * The named flag or `--` separator already protects the value from being
  * parsed as a flag by the child CLI, so the leading-'-', metacharacter, and
- * path-traversal checks do not apply. We only reject null bytes and newlines
- * that would corrupt the argv structure itself.
+ * path-traversal checks do not apply. Newlines and tabs are allowed: children
+ * are spawned with an argv array (no shell), where any byte except NUL is a
+ * legal argument character, and free text (prompts, PR bodies, messages)
+ * legitimately spans multiple lines. Only NUL — which cannot appear in an
+ * argv element at all — is rejected.
  *
  * Returns the value unchanged when valid.
  */
 export function validateFreeText(value: string, label: string): string {
   if (value.length === 0) throw new ArgInjectionError(`${label} must not be empty`);
-  if (hasControlChar(value))
-    throw new ArgInjectionError(`${label} must not contain control characters`);
+  if (value.includes("\0")) throw new ArgInjectionError(`${label} must not contain null bytes`);
   return value;
 }
 
@@ -188,9 +190,18 @@ export function validateRepo(value: string): string {
 }
 
 /**
+ * The dbxcli filter grammar: `field<op>value` with a symbolic operator
+ * (=, !=, ~, !~, >, <) directly between field and value, or the word
+ * operators `in`/`nin` separated by spaces (`labels in bug,urgent`).
+ */
+const FILTER_SHAPE_RE = /^[A-Za-z_][A-Za-z0-9_.]*\s*(?:(?:!?[=~]|[<>])\s*\S|\s+(?:in|nin)\s+\S)/;
+
+/**
  * Validate a dbxcli filter expression, e.g. `status=Done`, `status!=Canceled`,
- * `labels in bug,urgent`, `priority>2`. Rejects leading '-' and shell metacharacters;
- * allows comparison operators '<', '>' that the filter syntax requires.
+ * `labels in bug,urgent`, `priority>2`. Rejects leading '-' and shell
+ * metacharacters, and checks the clause matches the filter grammar so a
+ * malformed filter fails instantly with a prescriptive message instead of a
+ * subprocess round-trip and an opaque dbxcli parse error.
  */
 export function validateFilter(value: string): string {
   if (value.length === 0) throw new ArgInjectionError("filter must not be empty");
@@ -200,5 +211,10 @@ export function validateFilter(value: string): string {
     throw new ArgInjectionError("filter must not contain control characters");
   if (FILTER_META_RE.test(value))
     throw new ArgInjectionError(`filter contains shell metacharacters: ${JSON.stringify(value)}`);
+  if (!FILTER_SHAPE_RE.test(value))
+    throw new ArgInjectionError(
+      `invalid filter ${JSON.stringify(value)}: expected 'field<op>value' with op one of ` +
+        `= != ~ !~ > < (e.g. 'status=Done', 'priority>2'), or 'field in a,b' / 'field nin a,b'`,
+    );
   return value;
 }

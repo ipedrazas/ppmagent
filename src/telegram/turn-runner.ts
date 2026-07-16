@@ -51,6 +51,15 @@ function formatToolEnd(toolName: string, result: unknown, isError: boolean): str
   return `${icon} \`${toolName}\` ${isError ? "failed" : "done"}\n\`\`\`\n${text}\n\`\`\``;
 }
 
+/**
+ * Prepended to the user message when `/describe` mode is on: asks the agent to
+ * narrate its tool-calling decisions rather than just making them silently.
+ */
+const DESCRIBE_MODE_PROMPT =
+  "You are in describe mode. Before each tool call, explain why you are calling " +
+  "that tool, what you expect to get from it, and after receiving the response, " +
+  "explain what you learned and how it affects your next decision.";
+
 /** Concatenated text of the most recent assistant message, if any. */
 function lastAssistantText(messages: AgentMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -234,8 +243,10 @@ export class TurnRunner {
         })
       : null;
 
+    const promptText = session.describeEnabled ? `${DESCRIBE_MODE_PROMPT}\n\n${text}` : text;
+
     try {
-      await this.deps.built.agent.prompt(text);
+      await this.deps.built.agent.prompt(promptText);
     } catch (error) {
       const durationMs = Math.round(performance.now() - startedAt);
       turnLog.withError(error).error("agent turn failed");

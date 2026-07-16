@@ -120,6 +120,32 @@ describe("ProteosClient argv + exit handling", () => {
     expect(out).toBe("ARGV\ttask\tsend\t--machine\tm-1\t--\tt-9\tnow add tests");
   });
 
+  test("proteos_task_run tool strips control characters from the prompt before it reaches argv", async () => {
+    const client = new ProteosClient({ bin });
+    const tool = buildProteosTools(client).find((t) => t.name === "proteos_task_run");
+    if (!tool) throw new Error("proteos_task_run not found");
+    const out = await tool.execute("call-1", {
+      machine: "m-1",
+      project: "p",
+      prompt: "do\x01 it\x1f now",
+    });
+    const text = (out.content[0] as { text: string }).text;
+    expect(text).toBe("ARGV\ttask\trun\t--machine\tm-1\t--project\tp\t--\tdo it now");
+  });
+
+  test("proteos_task_send tool strips control characters from the prompt before it reaches argv", async () => {
+    const client = new ProteosClient({ bin });
+    const tool = buildProteosTools(client).find((t) => t.name === "proteos_task_send");
+    if (!tool) throw new Error("proteos_task_send not found");
+    const out = await tool.execute("call-1", {
+      machine: "m-1",
+      task: "t-9",
+      prompt: "now\x02 add\x1e tests",
+    });
+    const text = (out.content[0] as { text: string }).text;
+    expect(text).toBe("ARGV\ttask\tsend\t--machine\tm-1\t--\tt-9\tnow add tests");
+  });
+
   test("git commit puts paths after -- so a dashed path is not a flag", async () => {
     const client = new ProteosClient({ bin });
     const out = await client.gitCommit({
@@ -233,6 +259,18 @@ describe("proteos_task_run wait opt-in", () => {
     const tool = runTool((...args) => dispatched.push(args));
     await tool.execute("call-1", { machine: "m-1", project: "p", prompt: "do it", wait: false });
     expect(dispatched).toEqual([]);
+  });
+
+  test("strips control characters from the prompt before dispatch, keeping them out of the tracked label", async () => {
+    const dispatched: unknown[] = [];
+    const tool = runTool((...args) => dispatched.push(args));
+    await tool.execute("call-1", {
+      machine: "m-1",
+      project: "p",
+      prompt: "do it\x01\x02 now\x1f",
+      wait: true,
+    });
+    expect(dispatched).toEqual([["m-1", "t-42", "p", "do it now"]]);
   });
 });
 

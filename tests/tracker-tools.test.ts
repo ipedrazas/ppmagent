@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DataboxClient } from "../src/tracker/databox.ts";
 import { buildTrackerTools } from "../src/tracker/tools.ts";
 
@@ -30,5 +33,172 @@ describe("buildTrackerTools", () => {
       expect(tool.description.length).toBeGreaterThan(0);
       expect(tool.label.length).toBeGreaterThan(0);
     }
+  });
+});
+
+/**
+ * A fake `dbxcli` binary returning canned JSON per subcommand, echoing the
+ * argv it received into an `_argv` field so tests can tell whether
+ * `tracker_search_tasks` invoked `get`/`list` (cheap) or `search` (full-text,
+ * TAV-91) without needing a real DataboxPPM connection.
+ */
+const FAKE_DBXCLI = `#!/usr/bin/env bash
+shift 2
+cmd="$1"
+argv="$*"
+case "$cmd" in
+  datasets)
+    echo '{"datasets":[{"alias":"issues","data_kind":"issues"}]}'
+    ;;
+  action)
+    echo '{"items":[]}'
+    ;;
+  list)
+    echo '{"items":[{"id":"row-list","identifier":"LIST-1","url":"https://x/issue/LIST-1/s","_argv":"'"$argv"'"}]}'
+    ;;
+  get)
+    ref="$3"
+    echo '{"id":"row-get","identifier":"'"$ref"'","url":"https://x/issue/'"$ref"'/s","_argv":"'"$argv"'"}'
+    ;;
+  search)
+    echo '{"items":[{"id":"row-search","identifier":"SEARCH-1","url":"https://x/issue/SEARCH-1/s","_argv":"'"$argv"'"}]}'
+    ;;
+esac
+exit 0
+`;
+
+describe("tracker_search_tasks routing (TAV-91)", () => {
+  let dir: string;
+  let bin: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "dbxcli-test-"));
+    bin = join(dir, "dbxcli");
+    await writeFile(bin, FAKE_DBXCLI);
+    await chmod(bin, 0o755);
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function searchTool() {
+    const client = new DataboxClient({ bin, config: "" });
+    const tool = buildTrackerTools(client).find((t) => t.name === "tracker_search_tasks");
+    if (!tool) throw new Error("tracker_search_tasks not found");
+    return tool;
+  }
+
+  test("routes a known task reference to `get`, not `search`", async () => {
+    const result = await searchTool().execute("call-1", { query: "TAV-41" });
+    const [row] = result.details as Array<{ id: string; _argv: string }>;
+    expect(row?.id).toBe("row-get");
+    expect(row?._argv).toContain("get");
+    expect(row?._argv).not.toContain("search");
+  });
+
+  test("routes `status:<value>` to `list --filter status=<value>`, not `search`", async () => {
+    const result = await searchTool().execute("call-1", { query: "status:Backlog" });
+    const [row] = result.details as Array<{ id: string; _argv: string }>;
+    expect(row?.id).toBe("row-list");
+    expect(row?._argv).toContain("--filter");
+    expect(row?._argv).toContain("status=Backlog");
+  });
+
+  test("routes a bare known workflow status word to `list`, not `search`", async () => {
+    const result = await searchTool().execute("call-1", { query: "Backlog" });
+    const [row] = result.details as Array<{ id: string; _argv: string }>;
+    expect(row?.id).toBe("row-list");
+    expect(row?._argv).toContain("status=Backlog");
+  });
+
+  test("falls back to `search` for a genuine free-text query", async () => {
+    const result = await searchTool().execute("call-1", { query: "fix login bug" });
+    const [row] = result.details as Array<{ id: string; _argv: string }>;
+    expect(row?.id).toBe("row-search");
+    expect(row?._argv).toContain("fix login bug");
+  });
+});
+
+/**
+ * Fake `dbxcli` for project lookups: a projects dataset where `search` knows
+ * "Casa" and `list` knows "PPMAgent", so tests can tell which path resolved a
+ * name lookup (server-side search vs the client-side list-scan fallback).
+ */
+const FAKE_DBXCLI_PROJECTS = `#!/usr/bin/env bash
+shift 2
+cmd="$1"
+argv="$*"
+case "$cmd" in
+  datasets)
+    echo '{"datasets":[{"alias":"projects","data_kind":"projects"}]}'
+    ;;
+  action)
+    echo '{"items":[]}'
+    ;;
+  search)
+    echo '{"items":[{"id":"proj-search","name":"Casa","_argv":"'"$argv"'"}]}'
+    ;;
+  list)
+    echo '{"items":[{"id":"proj-list","name":"PPMAgent","_argv":"'"$argv"'"}]}'
+    ;;
+  get)
+    echo '{"id":"proj-get","name":"ByUuid","_argv":"'"$argv"'"}'
+    ;;
+esac
+exit 0
+`;
+
+describe("tracker_get_project name resolution", () => {
+  let dir: string;
+  let bin: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "dbxcli-proj-test-"));
+    bin = join(dir, "dbxcli");
+    await writeFile(bin, FAKE_DBXCLI_PROJECTS);
+    await chmod(bin, 0o755);
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function getProjectTool() {
+    const client = new DataboxClient({ bin, config: "" });
+    const tool = buildTrackerTools(client).find((t) => t.name === "tracker_get_project");
+    if (!tool) throw new Error("tracker_get_project not found");
+    return tool;
+  }
+
+  test("resolves a name via server-side `search` (case-insensitive)", async () => {
+    const result = await getProjectTool().execute("call-1", { ref: "casa" });
+    const row = result.details as { id: string; _argv: string };
+    expect(row.id).toBe("proj-search");
+    expect(row._argv).toContain("search");
+  });
+
+  test("falls back to the list scan when search has no exact-name match", async () => {
+    const result = await getProjectTool().execute("call-1", { ref: "PPMAgent" });
+    const row = result.details as { id: string; _argv: string };
+    expect(row.id).toBe("proj-list");
+  });
+
+  test("fetches by UUID via `get` without any name scan", async () => {
+    const uuid = "25afba6f-32b0-45c5-868b-67db252f4950";
+    const result = await getProjectTool().execute("call-1", { ref: uuid });
+    const row = result.details as { id: string; _argv: string };
+    expect(row.id).toBe("proj-get");
+    expect(row._argv).toContain(uuid);
+  });
+
+  test("throws a clear error when neither search nor list matches", async () => {
+    const err = await getProjectTool()
+      .execute("call-1", { ref: "NoSuchProject" })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(String(err)).toMatch(/no project found/i);
   });
 });

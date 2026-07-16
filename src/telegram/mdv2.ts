@@ -1,9 +1,12 @@
 /**
  * Helpers for converting Markdown (as produced by Claude) to Telegram MarkdownV2.
  *
- * Telegram MarkdownV2 requires every character from the set
+ * Standard Markdown entities are translated to their MarkdownV2 equivalents
+ * (`**bold**` → `*bold*`, `# heading` → bold line, links, `~~strike~~` → `~strike~`)
+ * so the agent's formatting actually renders. Telegram MarkdownV2 requires
+ * every character from the set
  *   _ * [ ] ( ) ~ ` > # + - = | { } . ! \
- * to be escaped with a leading backslash **outside** of code entities.
+ * to be escaped with a leading backslash **outside** of recognized entities.
  * Inside `code`/`pre` spans only `` ` `` and `\` need escaping.
  */
 
@@ -26,22 +29,88 @@ function escapeCode(s: string): string {
   return s.replace(CODE_RE, "\\$1");
 }
 
+/** Escape chars that are special inside the URL part of a MarkdownV2 link. */
+function escapeUrl(s: string): string {
+  return s.replace(/([)\\])/g, "\\$1");
+}
+
 /**
- * Convert a segment of prose (no fenced code blocks) to MarkdownV2.
- * Inline `` `code` `` spans are kept as-is (content escaped for code context);
- * everything else has prose special chars escaped.
+ * Inline Markdown entities recognized in prose, in priority order: inline
+ * code, links, bold (`**`/`__`), italic (`*`/word-boundary `_`), strikethrough.
+ * Entities never span lines; `_` italic requires non-word neighbours so
+ * snake_case identifiers stay literal.
  */
-function convertProse(text: string): string {
+const INLINE_RE =
+  /(?<code>`[^`\n]+`)|(?<link>\[[^\]\n]*\]\((?:[^()\n]|\([^()\n]*\))*\))|(?<bold>\*\*[^\n]+?\*\*)|(?<ubold>__[^\n]+?__)|(?<italic>\*[^\s*](?:[^*\n]*?[^\s*])?\*)|(?<uitalic>(?<![\w\\])_[^\s_](?:[^_\n]*?[^\s_])?_(?!\w))|(?<strike>~~[^\n]+?~~)/g;
+
+/**
+ * Wrap converted content in a MarkdownV2 style marker (`*`, `_`, `~`) —
+ * unless the content contains inline code: MarkdownV2 forbids code inside
+ * other entities, so the style is dropped and the code span kept.
+ */
+function styled(marker: string, content: string): string {
+  const converted = convertInline(content);
+  return content.includes("`") ? converted : `${marker}${converted}${marker}`;
+}
+
+/**
+ * Convert one line's worth of inline Markdown to MarkdownV2: recognized
+ * entities are translated (recursing into their content for nesting like
+ * bold-containing-italic); everything between them is escaped.
+ */
+function convertInline(text: string): string {
   const parts: string[] = [];
-  const inlineRe = /`([^`]+)`/g;
   let last = 0;
-  for (let m = inlineRe.exec(text); m !== null; m = inlineRe.exec(text)) {
-    if (m.index > last) parts.push(escapeText(text.slice(last, m.index)));
-    parts.push(`\`${escapeCode(m[1] ?? "")}\``);
-    last = m.index + m[0].length;
+  // matchAll clones the regex, so recursive calls can't corrupt lastIndex.
+  for (const m of text.matchAll(INLINE_RE)) {
+    const index = m.index ?? 0;
+    if (index > last) parts.push(escapeText(text.slice(last, index)));
+    const g = m.groups ?? {};
+    if (g.code !== undefined) {
+      parts.push(`\`${escapeCode(g.code.slice(1, -1))}\``);
+    } else if (g.link !== undefined) {
+      // Split on the "](", which can't appear in either half: "]" is excluded
+      // from link text and the URL pattern has no way to match "](".
+      const sep = g.link.indexOf("](");
+      const label = g.link.slice(1, sep);
+      const url = g.link.slice(sep + 2, -1);
+      parts.push(`[${convertInline(label)}](${escapeUrl(url)})`);
+    } else if (g.bold !== undefined) {
+      parts.push(styled("*", g.bold.slice(2, -2)));
+    } else if (g.ubold !== undefined) {
+      parts.push(styled("*", g.ubold.slice(2, -2)));
+    } else if (g.italic !== undefined) {
+      parts.push(styled("_", g.italic.slice(1, -1)));
+    } else if (g.uitalic !== undefined) {
+      parts.push(styled("_", g.uitalic.slice(1, -1)));
+    } else if (g.strike !== undefined) {
+      parts.push(styled("~", g.strike.slice(2, -2)));
+    }
+    last = index + m[0].length;
   }
   if (last < text.length) parts.push(escapeText(text.slice(last)));
   return parts.join("");
+}
+
+/**
+ * Convert a segment of prose (no fenced code blocks) to MarkdownV2.
+ * Heading lines become bold (MarkdownV2 has no headings); other lines get
+ * inline entity translation via {@link convertInline}.
+ */
+function convertProse(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const h = line.match(/^#{1,6}\s+(.*\S)\s*$/);
+      // Bold stand-in for headings — except when the heading contains inline
+      // code, which MarkdownV2 forbids nesting inside bold. Bold markers in
+      // the heading text are dropped (the whole line is bold anyway).
+      if (h && !h[1]?.includes("`")) {
+        return `*${convertInline((h[1] ?? "").replace(/\*\*([^\n]+?)\*\*/g, "$1"))}*`;
+      }
+      return convertInline(line);
+    })
+    .join("\n");
 }
 
 type Token = { kind: "prose"; raw: string } | { kind: "code"; lang: string; code: string };
@@ -72,9 +141,10 @@ function formatToken(t: Token): string {
  * Convert standard Markdown to Telegram MarkdownV2.
  *
  * Fenced code blocks (` ``` `) and inline code (`` ` ``) are preserved with
- * minimal content escaping (only `` ` `` and `\`).  All other text has the
- * full set of MarkdownV2 special characters escaped so Telegram accepts the
- * message.
+ * minimal content escaping (only `` ` `` and `\`). Bold, italic, headings,
+ * links, and strikethrough are translated to their MarkdownV2 forms so they
+ * render; any remaining special characters are escaped so Telegram accepts
+ * the message.
  */
 export function toMarkdownV2(text: string): string {
   return tokenize(text).map(formatToken).join("");

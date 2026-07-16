@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { sanitizeLine, sanitizeString } from "../src/tools/sanitize.ts";
+import { sanitizeLine, sanitizePrompt, sanitizeString } from "../src/tools/sanitize.ts";
 
 describe("sanitizeString", () => {
   test("passes through normal text unchanged", () => {
@@ -63,5 +63,40 @@ describe("sanitizeLine", () => {
 
   test("collapses multiple newlines into one space", () => {
     expect(sanitizeLine("a\n\n\nb")).toBe("a b");
+  });
+});
+
+describe("sanitizePrompt", () => {
+  test("passes through a clean prompt unchanged", () => {
+    expect(sanitizePrompt("fix the bug in src/app.ts")).toBe("fix the bug in src/app.ts");
+  });
+
+  test("preserves newlines", () => {
+    expect(sanitizePrompt("line1\nline2")).toBe("line1\nline2");
+  });
+
+  test("preserves tabs", () => {
+    expect(sanitizePrompt("col1\tcol2")).toBe("col1\tcol2");
+  });
+
+  test("strips null bytes", () => {
+    expect(sanitizePrompt("foo\x00bar")).toBe("foobar");
+  });
+
+  test("strips SOH through BS (0x01–0x08)", () => {
+    expect(sanitizePrompt("\x01\x02\x03\x04\x05\x06\x07\x08")).toBe("");
+  });
+
+  test("strips VT, FF, and CR (0x0b, 0x0c, 0x0d)", () => {
+    expect(sanitizePrompt("a\x0bb\x0cc\x0dd")).toBe("abcd");
+  });
+
+  test("strips SO through US (0x0e–0x1f)", () => {
+    expect(sanitizePrompt("\x0e\x1f")).toBe("");
+  });
+
+  test("does not strip DEL (0x7f) or printable ASCII", () => {
+    const text = "a\x7fb !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+    expect(sanitizePrompt(text)).toBe(text);
   });
 });
