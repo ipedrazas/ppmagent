@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import type { Usage } from "@earendil-works/pi-ai";
 import { MetricsCollector } from "../src/metrics/collector.ts";
+
+function usage(totalTokens: number, costTotal: number): Usage {
+  return {
+    input: totalTokens,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens,
+    cost: { input: costTotal, output: 0, cacheRead: 0, cacheWrite: 0, total: costTotal },
+  };
+}
 
 describe("MetricsCollector.snapshot — initial state", () => {
   test("returns zero counts when nothing recorded", () => {
@@ -10,8 +22,8 @@ describe("MetricsCollector.snapshot — initial state", () => {
     expect(s.turns.durationMs.avg).toBe(0);
     expect(s.turns.durationMs.max).toBe(0);
     expect(s.turns.durationMs.total).toBe(0);
-    expect(s.tokens.estimatedTotal).toBe(0);
-    expect(s.tokens.estimatedCostUsd).toBe(0);
+    expect(s.tokens.total).toBe(0);
+    expect(s.tokens.costUsd).toBe(0);
     expect(s.tools).toEqual({});
     expect(s.compactions.count).toBe(0);
     expect(s.compactions.tokensReclaimed).toBe(0);
@@ -26,8 +38,8 @@ describe("MetricsCollector.snapshot — initial state", () => {
 describe("MetricsCollector.recordTurn", () => {
   test("accumulates turn count and duration", () => {
     const c = new MetricsCollector();
-    c.recordTurn({ durationMs: 100, tokensBefore: 1000, tokensAfter: 1100 });
-    c.recordTurn({ durationMs: 300, tokensBefore: 1100, tokensAfter: 1250 });
+    c.recordTurn({ durationMs: 100 });
+    c.recordTurn({ durationMs: 300 });
     const s = c.snapshot();
     expect(s.turns.total).toBe(2);
     expect(s.turns.durationMs.total).toBe(400);
@@ -37,38 +49,30 @@ describe("MetricsCollector.recordTurn", () => {
 
   test("tracks errored turns separately", () => {
     const c = new MetricsCollector();
-    c.recordTurn({ durationMs: 50, tokensBefore: 0, tokensAfter: 0 });
-    c.recordTurn({ durationMs: 50, tokensBefore: 0, tokensAfter: 0, error: true });
+    c.recordTurn({ durationMs: 50 });
+    c.recordTurn({ durationMs: 50, error: true });
     const s = c.snapshot();
     expect(s.turns.total).toBe(2);
     expect(s.turns.errored).toBe(1);
   });
+});
 
-  test("accumulates estimated tokens from context delta", () => {
+describe("MetricsCollector.recordUsage", () => {
+  test("accumulates provider-reported tokens and cost", () => {
     const c = new MetricsCollector();
-    c.recordTurn({ durationMs: 10, tokensBefore: 500, tokensAfter: 700 });
-    c.recordTurn({ durationMs: 10, tokensBefore: 700, tokensAfter: 1000 });
-    expect(c.snapshot().tokens.estimatedTotal).toBe(500);
+    c.recordUsage(usage(500, 0.003));
+    c.recordUsage(usage(300, 0.0018));
+    const s = c.snapshot();
+    expect(s.tokens.total).toBe(800);
+    expect(s.tokens.costUsd).toBeCloseTo(0.0048, 6);
   });
 
-  test("negative token delta is clamped to zero", () => {
+  test("cost is exactly what the provider/model reported — no re-derivation", () => {
     const c = new MetricsCollector();
-    // tokensAfter < tokensBefore can happen when compaction runs mid-turn
-    c.recordTurn({ durationMs: 10, tokensBefore: 1000, tokensAfter: 500 });
-    expect(c.snapshot().tokens.estimatedTotal).toBe(0);
-  });
-
-  test("computes cost for known anthropic model", () => {
-    const c = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
-    // 1M tokens at $6/M = $6
-    c.recordTurn({ durationMs: 10, tokensBefore: 0, tokensAfter: 1_000_000 });
-    expect(c.snapshot().tokens.estimatedCostUsd).toBe(6);
-  });
-
-  test("cost is zero for unknown provider/model", () => {
-    const c = new MetricsCollector({ provider: "unknown", model: "unknown-model" });
-    c.recordTurn({ durationMs: 10, tokensBefore: 0, tokensAfter: 1_000_000 });
-    expect(c.snapshot().tokens.estimatedCostUsd).toBe(0);
+    // A model-specific price the collector never sees directly — it just sums
+    // what usage.cost.total already carries.
+    c.recordUsage(usage(1_000_000, 12.5));
+    expect(c.snapshot().tokens.costUsd).toBe(12.5);
   });
 });
 
@@ -124,43 +128,16 @@ describe("MetricsCollector.recordCompaction", () => {
 });
 
 describe("MetricsCollector.sessionCostUsd", () => {
-  test("returns 0 with no recorded turns", () => {
-    const c = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
+  test("returns 0 with no recorded usage", () => {
+    const c = new MetricsCollector();
     expect(c.sessionCostUsd()).toBe(0);
   });
 
-  test("accumulates cost across turns", () => {
-    const c = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
-    // 500k tokens at $6/M = $3
-    c.recordTurn({ durationMs: 10, tokensBefore: 0, tokensAfter: 500_000 });
+  test("accumulates cost across recorded usage", () => {
+    const c = new MetricsCollector();
+    c.recordUsage(usage(500_000, 3));
     expect(c.sessionCostUsd()).toBe(3);
-    // another 500k → total $6
-    c.recordTurn({ durationMs: 10, tokensBefore: 500_000, tokensAfter: 1_000_000 });
+    c.recordUsage(usage(500_000, 3));
     expect(c.sessionCostUsd()).toBe(6);
-  });
-
-  test("is 0 for unknown provider", () => {
-    const c = new MetricsCollector({ provider: "unknown", model: "unknown" });
-    c.recordTurn({ durationMs: 10, tokensBefore: 0, tokensAfter: 1_000_000 });
-    expect(c.sessionCostUsd()).toBe(0);
-  });
-});
-
-describe("MetricsCollector.estimateTurnCostUsd", () => {
-  test("returns estimated cost for the token delta", () => {
-    const c = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
-    // 1M tokens at $6/M = $6
-    expect(c.estimateTurnCostUsd(0, 1_000_000)).toBe(6);
-  });
-
-  test("clamps negative delta to zero cost", () => {
-    const c = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
-    expect(c.estimateTurnCostUsd(1_000_000, 500_000)).toBe(0);
-  });
-
-  test("does not record the estimate — snapshot is unchanged", () => {
-    const c = new MetricsCollector({ provider: "anthropic", model: "claude-sonnet-4-6" });
-    c.estimateTurnCostUsd(0, 1_000_000);
-    expect(c.snapshot().tokens.estimatedTotal).toBe(0);
   });
 });

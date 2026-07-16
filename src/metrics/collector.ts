@@ -6,30 +6,11 @@
  * in-memory state and emit a structured log line, but never throw. The
  * snapshot() method returns a plain object suitable for JSON serialisation.
  */
+import type { Usage } from "@earendil-works/pi-ai";
 import { type Logger, nullLogger } from "../logger.ts";
-
-/** Blended (input+output) estimated cost per 1M tokens, by provider → model. */
-const COST_PER_1M: Record<string, Record<string, number>> = {
-  anthropic: {
-    "claude-sonnet-4-6": 6,
-    "claude-opus-4-8": 30,
-    "claude-haiku-4-5-20251001": 1.6,
-    "claude-sonnet-4-7": 9,
-  },
-  deepseek: {
-    "deepseek-v4-pro": 2,
-    "deepseek-chat": 0.5,
-  },
-};
-
-function lookupCostPer1M(provider: string, model: string): number {
-  return COST_PER_1M[provider]?.[model] ?? 0;
-}
 
 export interface TurnRecord {
   durationMs: number;
-  tokensBefore: number;
-  tokensAfter: number;
   error?: boolean;
 }
 
@@ -41,8 +22,8 @@ export interface MetricsSnapshot {
     durationMs: { avg: number; max: number; total: number };
   };
   tokens: {
-    estimatedTotal: number;
-    estimatedCostUsd: number;
+    total: number;
+    costUsd: number;
   };
   tools: Record<string, { calls: number; errors: number; errorRate: number }>;
   compactions: { count: number; tokensReclaimed: number };
@@ -50,22 +31,21 @@ export interface MetricsSnapshot {
 
 export class MetricsCollector {
   private readonly log: Logger;
-  private readonly costPer1M: number;
   private readonly startedAt = performance.now();
 
   private turnTotal = 0;
   private turnErrored = 0;
   private totalDurationMs = 0;
   private maxDurationMs = 0;
-  private estimatedTokensTotal = 0;
+  private tokensTotal = 0;
+  private costUsdTotal = 0;
 
   private readonly toolStats: Record<string, { calls: number; errors: number }> = {};
   private compactionCount = 0;
   private tokensReclaimed = 0;
 
-  constructor(opts: { logger?: Logger; provider?: string; model?: string } = {}) {
+  constructor(opts: { logger?: Logger } = {}) {
     this.log = (opts.logger ?? nullLogger).child().withContext({ component: "metrics" });
-    this.costPer1M = lookupCostPer1M(opts.provider ?? "", opts.model ?? "");
   }
 
   recordTurn(rec: TurnRecord): void {
@@ -74,21 +54,26 @@ export class MetricsCollector {
     this.totalDurationMs += rec.durationMs;
     if (rec.durationMs > this.maxDurationMs) this.maxDurationMs = rec.durationMs;
 
-    const tokensAdded = Math.max(0, rec.tokensAfter - rec.tokensBefore);
-    this.estimatedTokensTotal += tokensAdded;
-    const estimatedCostUsd = (tokensAdded / 1_000_000) * this.costPer1M;
+    this.log
+      .withMetadata({ metric: "turn", durationMs: rec.durationMs, error: rec.error ?? false })
+      .info("metric: turn");
+  }
 
+  /**
+   * Accumulate one assistant response's provider-reported token usage and
+   * cost (`AssistantMessage.usage`, already priced via the `Model`'s
+   * per-token cost table) — the ground truth for spend, not an estimate.
+   */
+  recordUsage(usage: Usage): void {
+    this.tokensTotal += usage.totalTokens;
+    this.costUsdTotal += usage.cost.total;
     this.log
       .withMetadata({
-        metric: "turn",
-        durationMs: rec.durationMs,
-        tokensBefore: rec.tokensBefore,
-        tokensAfter: rec.tokensAfter,
-        tokensAdded,
-        estimatedCostUsd,
-        error: rec.error ?? false,
+        metric: "usage",
+        totalTokens: usage.totalTokens,
+        costUsd: usage.cost.total,
       })
-      .info("metric: turn");
+      .info("metric: usage");
   }
 
   recordToolCall(toolName: string, isError: boolean): void {
@@ -112,18 +97,9 @@ export class MetricsCollector {
     }
   }
 
-  /** Current accumulated estimated session cost in USD. */
+  /** Current accumulated session cost in USD, from provider-reported usage. */
   sessionCostUsd(): number {
-    return Math.round((this.estimatedTokensTotal / 1_000_000) * this.costPer1M * 10_000) / 10_000;
-  }
-
-  /**
-   * Estimate the cost for a hypothetical turn's token delta without recording
-   * it. Used by spend-limit enforcement before/during a turn.
-   */
-  estimateTurnCostUsd(tokensBefore: number, tokensAfter: number): number {
-    const tokensAdded = Math.max(0, tokensAfter - tokensBefore);
-    return (tokensAdded / 1_000_000) * this.costPer1M;
+    return Math.round(this.costUsdTotal * 10_000) / 10_000;
   }
 
   recordCompaction(tokensBefore: number, tokensAfter: number): void {
@@ -161,9 +137,8 @@ export class MetricsCollector {
         },
       },
       tokens: {
-        estimatedTotal: this.estimatedTokensTotal,
-        estimatedCostUsd:
-          Math.round((this.estimatedTokensTotal / 1_000_000) * this.costPer1M * 10_000) / 10_000,
+        total: this.tokensTotal,
+        costUsd: this.sessionCostUsd(),
       },
       tools,
       compactions: { count: this.compactionCount, tokensReclaimed: this.tokensReclaimed },
