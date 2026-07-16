@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { FauxProviderHandle } from "@earendil-works/pi-ai";
@@ -13,6 +13,8 @@ import { buildAgent } from "../../src/agent.ts";
 import type { Config } from "../../src/config.ts";
 import { makeTransformContext } from "../../src/memory/context.ts";
 import { PpmClient } from "../../src/memory/ppm.ts";
+import { MetricsCollector } from "../../src/metrics/collector.ts";
+import { TraceRecorder } from "../../src/trace/recorder.ts";
 import { makeTestConfig } from "../support/config.ts";
 
 // Step 2 (agent + ask_user) driven by pi's faux provider — deterministic, no
@@ -142,5 +144,50 @@ describe.skipIf(!ppmBin)("agent + ask_user", () => {
     const { data } = await ppm.context(PROJECT, 5);
     const decisions = data.recentDecisions.map((d) => d.body);
     expect(decisions.some((b) => b.includes("email nudge only"))).toBe(true);
+  });
+
+  test("trace records tool results and assistant text; metrics record provider usage", async () => {
+    faux.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall("memory_write", {
+          project: PROJECT,
+          type: "decision",
+          content: "Scope the first task to the email nudge only.",
+        }),
+      ]),
+      fauxAssistantMessage("Recorded the decision."),
+    ]);
+
+    const traceDir = mkdtempSync(join(root, "traces-"));
+    const recorder = new TraceRecorder(traceDir);
+    recorder.setSession("s-1");
+    const metrics = new MetricsCollector();
+
+    const { agent } = buildAgent(testConfig(root), () => PROJECT, {
+      model: faux.getModel(),
+      streamFn: fauxStream,
+      recorder,
+      metrics,
+    });
+
+    await agent.prompt("scope the onboarding work");
+
+    const events = readFileSync(join(traceDir, "s-1.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+
+    const toolEnd = events.find((e) => e.type === "tool_end") as
+      | { result?: { content?: unknown } }
+      | undefined;
+    expect(toolEnd?.result).toBeDefined();
+
+    const assistantMessages = events.filter((e) => e.type === "assistant_message");
+    expect(assistantMessages.length).toBe(2);
+    expect(assistantMessages.some((e) => e.text === "Recorded the decision.")).toBe(true);
+
+    // The faux provider estimates real token counts from message content, so
+    // provider-reported usage flows through even though the faux cost is 0.
+    expect(metrics.snapshot().tokens.total).toBeGreaterThan(0);
   });
 });

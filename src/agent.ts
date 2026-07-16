@@ -1,5 +1,11 @@
 import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
-import { createProvider, envApiKeyAuth, type Model } from "@earendil-works/pi-ai";
+import {
+  type AssistantMessage,
+  createProvider,
+  envApiKeyAuth,
+  type Model,
+  type TextContent,
+} from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import type { Config } from "./config.ts";
@@ -168,13 +174,24 @@ export interface BuildAgentOverrides {
   reminderStore?: ReminderStore;
 }
 
+/** Concatenate the text blocks of an assistant message's content. */
+function assistantText(content: AssistantMessage["content"]): string {
+  return content
+    .filter((c): c is TextContent => c.type === "text")
+    .map((c) => c.text)
+    .join("");
+}
+
 /**
- * Subscribe to the agent's tool-execution events: one log line when a tool
- * starts and one when it ends. Mutating tools (writes, git ops, task dispatch)
- * are logged at `info` for an audit trail; read-only tools stay at `debug`.
- * Errors are always `warn`. A trace event is also recorded when a recorder is
- * present (args clipped; results are not recorded — they live in the transcript).
- * Returns the unsubscribe handle (left attached for the process lifetime).
+ * Subscribe to the agent's tool-execution and turn-completion events: one log
+ * line when a tool starts and one when it ends. Mutating tools (writes, git
+ * ops, task dispatch) are logged at `info` for an audit trail; read-only tools
+ * stay at `debug`. Errors are always `warn`. Trace events are also recorded
+ * when a recorder is present — tool args and results (both clipped), and each
+ * assistant turn's text and provider-reported usage — so a trace carries
+ * enough to replay or grade a session, not just re-derive it from the live
+ * transcript. Returns the unsubscribe handle (left attached for the process
+ * lifetime).
  */
 function traceTools(
   agent: Agent,
@@ -214,8 +231,20 @@ function traceTools(
         tool: event.toolName,
         toolCallId: event.toolCallId,
         isError: event.isError,
+        result: clipPayload(event.result),
       });
       metrics?.recordToolCall(event.toolName, event.isError);
+    } else if (event.type === "turn_end") {
+      const { message } = event;
+      if (!("role" in message) || message.role !== "assistant") return;
+      metrics?.recordUsage(message.usage);
+      recorder?.record({
+        type: "assistant_message",
+        text: clipPayload(assistantText(message.content)),
+        stopReason: message.stopReason,
+        totalTokens: message.usage.totalTokens,
+        costUsd: message.usage.cost.total,
+      });
     }
   });
 }
