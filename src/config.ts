@@ -150,6 +150,13 @@ export interface Config {
   metricsPort: number | null;
 
   /**
+   * HTTP port for the trace viewer UI (browsable session timelines over the
+   * JSONL traces `TraceRecorder` writes). `null` = disabled (default). Set
+   * `PPMA_TRACE_VIEWER_PORT` to expose it.
+   */
+  traceViewerPort: number | null;
+
+  /**
    * Number of days after which an idle session is deleted by the retention
    * runner. 0 = disabled (sessions accumulate indefinitely). Default: 30.
    */
@@ -359,6 +366,7 @@ export function loadConfig(env: Env = process.env): Config {
     githubWebhookSecret: optional(env, "PPMA_GITHUB_WEBHOOK_SECRET", ""),
     githubMonitoredRepos: resolveMonitoredRepos(env),
     metricsPort: resolvePort(env, "PPMA_METRICS_PORT"),
+    traceViewerPort: resolvePort(env, "PPMA_TRACE_VIEWER_PORT"),
     githubToken: optional(env, "GITHUB_TOKEN", ""),
 
     sessionRetentionDays: int(env, "PPMA_SESSION_RETENTION_DAYS", 30),

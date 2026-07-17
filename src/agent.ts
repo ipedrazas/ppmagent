@@ -134,7 +134,7 @@ function resolveOllamaModel(config: Config): Model<"openai-completions"> {
  * catalog — the casts let config-supplied values flow through (it is a
  * runtime catalog lookup).
  */
-function resolveModel(config: Config): Model<any> {
+export function resolveModel(config: Config): Model<any> {
   if (config.provider === "ollama") {
     return resolveOllamaModel(config);
   }
