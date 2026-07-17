@@ -77,6 +77,18 @@ describe("loadConfig", () => {
     expect(config.telegramAllowedChatId).toBe(-1001234567890);
   });
 
+  test("trace viewer port is disabled by default and parses when set", () => {
+    expect(loadConfig(base).traceViewerPort).toBeNull();
+    const config = loadConfig({ ...base, PPMA_TRACE_VIEWER_PORT: "4300" });
+    expect(config.traceViewerPort).toBe(4300);
+  });
+
+  test("rejects an out-of-range trace viewer port", () => {
+    expect(() => loadConfig({ ...base, PPMA_TRACE_VIEWER_PORT: "70000" })).toThrow(
+      /PPMA_TRACE_VIEWER_PORT must be a valid port/,
+    );
+  });
+
   test("PPMA_ALLOW_ANY_CHAT=true explicitly opts into an open bot", () => {
     const { PPMA_TELEGRAM_ALLOWED_CHAT_ID: _omitted, ...noChatId } = base;
     const config = loadConfig({ ...noChatId, PPMA_ALLOW_ANY_CHAT: "true" });

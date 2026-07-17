@@ -21,6 +21,7 @@ import { TelegramClient } from "./telegram/client.ts";
 import { TelegramWebhookTransport } from "./telegram/webhook-transport.ts";
 import { ConfirmationStore } from "./tools/confirmation.ts";
 import { TraceRecorder } from "./trace/recorder.ts";
+import { TraceViewerServer } from "./trace/viewer-server.ts";
 
 /**
  * Entrypoint: load config → create the ChatSession → build the agent (memory
@@ -67,8 +68,9 @@ async function main(): Promise<void> {
   );
 
   // Session traces live beside the sessions themselves; analyzed offline with
-  // `bun run trace` (src/trace/extract.ts).
-  const recorder = new TraceRecorder(join(dirname(config.sessionFile), "traces"), logger);
+  // `bun run trace` (src/trace/extract.ts) or browsed live via the trace viewer below.
+  const tracesDir = join(dirname(config.sessionFile), "traces");
+  const recorder = new TraceRecorder(tracesDir, logger);
   const metrics = new MetricsCollector({ logger });
 
   // The watcher holder breaks the init cycle: buildAgent needs onTaskDispatched,
@@ -122,6 +124,12 @@ async function main(): Promise<void> {
   if (config.metricsPort !== null) {
     metricsServer = new MetricsServer({ port: config.metricsPort, collector: metrics, logger });
     metricsServer.start();
+  }
+
+  let traceViewerServer: TraceViewerServer | null = null;
+  if (config.traceViewerPort !== null) {
+    traceViewerServer = new TraceViewerServer({ port: config.traceViewerPort, tracesDir, logger });
+    traceViewerServer.start();
   }
 
   let webhookServer: GitHubWebhookServer | null = null;
@@ -224,6 +232,7 @@ async function main(): Promise<void> {
     reminderRunner.stop();
     webhookServer?.stop();
     metricsServer?.stop();
+    traceViewerServer?.stop();
     webhookTransport?.stop();
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));

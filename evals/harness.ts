@@ -45,6 +45,8 @@ export interface EvalOutcome {
   id: string;
   rule: string;
   description: string;
+  /** The prompt sent to the model — the LLM judge grades against this, not just the description. */
+  prompt: string;
   pass: boolean;
   reason: string;
   report: SessionReport;
@@ -61,7 +63,7 @@ export interface EvalOutcome {
  * `tool_start` + errored `tool_end`) instead of silently doing nothing — good enough to
  * judge "did the model try to act instead of asking", which is what these cases grade.
  */
-function resolveEvalConfig(root: string): Config {
+export function resolveEvalConfig(root: string): Config {
   const env: Env = {
     ...process.env,
     PPMA_TELEGRAM_BOT_TOKEN: process.env.PPMA_TELEGRAM_BOT_TOKEN ?? "eval",
@@ -171,6 +173,7 @@ export async function runEvalCase(
       id: evalCase.id,
       rule: evalCase.rule,
       description: evalCase.description,
+      prompt: evalCase.prompt,
       pass,
       reason,
       report,
