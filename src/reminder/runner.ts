@@ -74,7 +74,7 @@ export class ReminderRunner {
     const now = Date.now();
     let due: Reminder[];
     try {
-      due = this.store.takeDue(now);
+      due = this.store.due(now);
     } catch (err) {
       // A store read/write failure (e.g. a transient disk error) must not
       // propagate: that would reject start()'s promise, which — awaited
@@ -86,11 +86,28 @@ export class ReminderRunner {
     if (due.length === 0) return;
     this.log.withMetadata({ count: due.length }).info("firing due reminders");
     for (const reminder of due) {
+      // Send first, remove on success: a failed send keeps the reminder in
+      // the store so it retries next poll (at-least-once delivery). The old
+      // pop-then-send order lost the reminder forever on a single network
+      // blip. The trade-off: if remove() fails after a successful send, the
+      // reminder may fire twice — a duplicate ping beats a silent drop.
       try {
         await this.opts.notify(formatNotification(reminder));
+      } catch (err) {
+        this.log
+          .withError(err)
+          .withMetadata({ id: reminder.id })
+          .warn("failed to send reminder; will retry next poll");
+        continue;
+      }
+      try {
+        this.store.remove(reminder.id);
         this.log.withMetadata({ id: reminder.id, message: reminder.message }).info("reminder sent");
       } catch (err) {
-        this.log.withError(err).withMetadata({ id: reminder.id }).warn("failed to send reminder");
+        this.log
+          .withError(err)
+          .withMetadata({ id: reminder.id })
+          .warn("reminder sent but could not be removed from store; it may fire again");
       }
     }
   }

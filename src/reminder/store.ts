@@ -67,15 +67,11 @@ export class ReminderStore {
   }
 
   /**
-   * Atomically pop all reminders whose dueAt is <= now.
-   * Removed from store so they won't fire again on the next poll.
+   * All reminders whose dueAt is <= now. Read-only: the runner removes each
+   * one (via {@link remove}) only after its notification is actually sent, so
+   * a failed send leaves the reminder in place to retry on the next poll.
    */
-  takeDue(now: number): Reminder[] {
-    const all = this.read();
-    const due = all.filter((r) => r.dueAt <= now);
-    if (due.length > 0) {
-      this.write(all.filter((r) => r.dueAt > now));
-    }
-    return due;
+  due(now: number): Reminder[] {
+    return this.read().filter((r) => r.dueAt <= now);
   }
 }

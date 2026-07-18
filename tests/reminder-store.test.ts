@@ -50,25 +50,26 @@ describe("ReminderStore", () => {
     expect(store.remove("does-not-exist")).toBe(false);
   });
 
-  test("takeDue() pops only reminders due at or before `now`", () => {
-    const store = new ReminderStore(join(dir, "take-due.json"));
+  test("due() returns only reminders due at or before `now`", () => {
+    const store = new ReminderStore(join(dir, "due.json"));
     store.add({ message: "due", dueAt: 1000 });
     store.add({ message: "not due yet", dueAt: 5000 });
 
-    const due = store.takeDue(1000);
+    const due = store.due(1000);
     expect(due.map((r) => r.message)).toEqual(["due"]);
-
-    // The due reminder is removed from the store; the future one remains.
-    const remaining = store.list();
-    expect(remaining.map((r) => r.message)).toEqual(["not due yet"]);
   });
 
-  test("takeDue() does not re-fire a reminder on a later poll", () => {
-    const store = new ReminderStore(join(dir, "no-refire.json"));
-    store.add({ message: "once only", dueAt: 1000 });
+  test("due() is read-only — the reminder stays until remove()", () => {
+    const store = new ReminderStore(join(dir, "due-readonly.json"));
+    const reminder = store.add({ message: "still here", dueAt: 1000 });
 
-    expect(store.takeDue(1000)).toHaveLength(1);
-    expect(store.takeDue(2000)).toHaveLength(0);
+    // Repeated reads keep returning it: the runner only removes a reminder
+    // after its notification was actually sent.
+    expect(store.due(1000)).toHaveLength(1);
+    expect(store.due(2000)).toHaveLength(1);
+
+    store.remove(reminder.id);
+    expect(store.due(2000)).toHaveLength(0);
   });
 
   test("survives a process restart by reading the persisted file", () => {

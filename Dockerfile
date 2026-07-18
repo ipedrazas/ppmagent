@@ -52,8 +52,11 @@ ENV NODE_ENV=production \
 # HTTPS call fails with "x509: certificate signed by unknown authority", even
 # for ordinary public (Let's Encrypt) endpoints. dbxcli (rustls, roots compiled
 # in) is unaffected, which is why only proteos breaks.
+# tzdata: the slim base also omits zoneinfo, so a TZ env var silently falls
+# back to UTC — which makes reminder times ("at 3pm") fire offset from the
+# user's wall clock. With tzdata present, setting TZ (see compose.yaml) works.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # The external CLIs the agent shells out to, on PATH. dbxcli still needs its

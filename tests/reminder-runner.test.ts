@@ -101,33 +101,43 @@ describe("ReminderRunner", () => {
     expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 
-  test("notification error does not crash the runner and the reminder is not retried", async () => {
+  test("notification error does not crash the runner and the reminder is retried next poll", async () => {
     const storeFile = join(dir, "notify-err.json");
     const store = new ReminderStore(storeFile);
     store.add({ message: "will fail to send", dueAt: Date.now() - 1_000 });
 
     let callCount = 0;
+    let fail = true;
     const runner = new ReminderRunner({
       store,
       notify: async () => {
         callCount++;
-        throw new Error("Telegram down");
+        if (fail) throw new Error("Telegram down");
       },
       intervalMs: 60_000,
     });
 
     await runner.pollOnce();
 
+    // The failed send keeps the reminder in the store for the next round —
+    // a transient Telegram outage must not permanently lose a reminder.
     expect(callCount).toBe(1);
-    // Reminder is popped from the store regardless of notify failure (matches
-    // the ProteosTaskWatcher precedent — we don't retry a failed send).
+    expect(store.list()).toHaveLength(1);
+
+    // Once sending succeeds, the reminder is removed and won't fire again.
+    fail = false;
+    await runner.pollOnce();
+    expect(callCount).toBe(2);
     expect(store.list()).toHaveLength(0);
+
+    await runner.pollOnce();
+    expect(callCount).toBe(2);
   });
 
   test("a store failure during poll does not crash the runner (retries next round)", async () => {
     const storeFile = join(dir, "store-err.json");
     class ThrowingStore extends ReminderStore {
-      override takeDue(): never {
+      override due(): never {
         throw new Error("ENOSPC: disk full");
       }
     }
