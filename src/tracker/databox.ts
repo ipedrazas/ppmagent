@@ -523,12 +523,15 @@ export class DataboxClient {
 
   // ── Projects (read + write) ──
 
-  async listProjects(limit = this.defaultLimit, signal?: AbortSignal): Promise<DataboxRow[]> {
+  async listProjects(
+    limit = this.defaultLimit,
+    fields?: string[],
+    signal?: AbortSignal,
+  ): Promise<DataboxRow[]> {
     const dataset = await this.datasetAlias("projects", signal);
-    const res = await this.run<ListResponse<DataboxRow>>(
-      ["list", dataset, "--limit", String(limit)],
-      signal,
-    );
+    const args = ["list", dataset, "--limit", String(limit)];
+    if (fields) args.push("--fields", fields.join(","));
+    const res = await this.run<ListResponse<DataboxRow>>(args, signal);
     return res.items ?? [];
   }
 
@@ -567,7 +570,7 @@ export class DataboxClient {
 
     let projects: DataboxRow[];
     try {
-      projects = await this.listProjects(limit, signal);
+      projects = await this.listProjects(limit, undefined, signal);
     } catch (error) {
       if (error instanceof DataboxError && /complexity/i.test(error.message)) {
         throw new DataboxError(

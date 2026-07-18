@@ -230,11 +230,14 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
 
   const listProjects = defineTool({
     name: "tracker_list_projects",
-    description: "List projects in the tracker, with their state, progress, and owning team(s).",
+    description:
+      "List projects in the tracker, with their state, progress, and owning team(s). Optionally restrict to specific fields.",
     label: "List projects",
-    parameters: Type.Object({}),
-    execute: async (_id, _params, signal) => {
-      const projects = await databox.listProjects(queryLimit, signal);
+    parameters: Type.Object({
+      fields: Type.Optional(Type.Array(Type.String())),
+    }),
+    execute: async (_id, params, signal) => {
+      const projects = await databox.listProjects(queryLimit, params.fields, signal);
       return toolResult(projects.map(renderProject).join("\n\n") || "No projects.", projects);
     },
   });
