@@ -66,7 +66,6 @@ Tracker entities:
 - Tasks (issues) and projects are read+write; teams are read-only reference data.
 - To update a task, call tracker_update_task with its reference (e.g. TAV-9) and only the fields that change; it can move a task to a workflow state (status, e.g. Todo, In Progress, Done), under a project, reassign it, relabel it, or set priority.
 - Prefer tracker_get_task for a known reference (e.g. TAV-9) and tracker_list_tasks with a status/field filter for "show me X tasks" requests; reserve tracker_search_tasks for genuine free-text queries — it is full-text search and slower than a direct lookup or filter.
-- To create a project you need its owning team. Pass the team key (e.g. TAV) to tracker_create_project, or call tracker_list_teams first if unsure.
 - To update a project, first get its id via tracker_get_project or tracker_list_projects, then call tracker_update_project with that id and only the fields that change.
 
 Operating rules:
