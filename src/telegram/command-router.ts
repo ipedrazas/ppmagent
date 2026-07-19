@@ -4,6 +4,7 @@
  * runs it as an agent turn). Extracted from {@link TelegramBot} so adding a
  * command is a change here, not in the transport/poll loop.
  */
+import { COMMANDS, cmdsCommand } from "../commands/cmds.ts";
 import { contextTokens, DEFAULT_KEEP_RECENT } from "../compaction.ts";
 import type { Config } from "../config.ts";
 import { execCommand } from "../exec.ts";
@@ -27,25 +28,9 @@ export function parseCommand(text: string): { cmd: string; arg: string } | null 
   return { cmd: m[1] ?? "", arg: (m[2] ?? "").trim() };
 }
 
-/** Full list of available slash commands, one line each. */
+/** Full list of available slash commands, one line each, from {@link COMMANDS}. */
 function helpText(): string {
-  return [
-    "Available commands:",
-    "/project <slug> — switch active project",
-    "/context — show context token usage",
-    "/compact — compact the transcript",
-    "/new [name] — start a fresh session",
-    "/name <name> — label current session",
-    "/session — show session details",
-    "/describe [on|off] — toggle reasoning-detail prompts for tool calls",
-    "/tools — report CLI tool versions",
-    "/resume [id|name] — list or switch sessions",
-    "/search [query] — search saved sessions (project:<slug> or name fragment)",
-    "/reminders — list pending reminders",
-    "/reminders cancel <id> — cancel a reminder",
-    "/cancel — cancel an in-flight turn",
-    "/help — show this message",
-  ].join("\n");
+  return ["Available commands:", ...COMMANDS.map((c) => `${c.usage} — ${c.summary}`)].join("\n");
 }
 
 export interface CommandRouterDeps {
@@ -181,6 +166,14 @@ export class CommandRouter {
       return this.reply(chatId, helpText());
     }
 
+    if (cmd === "explain") {
+      return this.reply(chatId, this.explainCommand(arg));
+    }
+
+    if (cmd === "cmds") {
+      return this.reply(chatId, cmdsCommand());
+    }
+
     return null;
   }
 
@@ -212,6 +205,33 @@ export class CommandRouter {
       .withMetadata({ describeEnabled: session.describeEnabled })
       .info("describe mode toggled");
     return `Describe mode is now ${session.describeEnabled ? "ON" : "OFF"}.`;
+  }
+
+  /**
+   * Handle `/explain <cmd>`. Looks up `cmd` (leading "/" optional) in the
+   * {@link COMMANDS} registry and returns a detailed description, or a
+   * usage/error message when `cmd` is missing or unknown.
+   */
+  private explainCommand(arg: string): string {
+    if (!arg) {
+      return "Usage: /explain <cmd> — e.g. /explain describe";
+    }
+
+    const name = arg.trim().replace(/^\//, "").toLowerCase();
+    const spec = COMMANDS.find((c) => c.name === name);
+    if (!spec) {
+      const available = COMMANDS.map((c) => c.name).join(", ");
+      return `Unknown command "/${name}". Available commands: ${available}.`;
+    }
+
+    return [
+      `/${spec.name} — ${spec.summary}`,
+      "",
+      spec.details,
+      "",
+      `Usage: ${spec.usage}`,
+      `Example: ${spec.example}`,
+    ].join("\n");
   }
 
   /**
