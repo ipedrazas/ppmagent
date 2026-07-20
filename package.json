@@ -19,8 +19,8 @@
     "format": "biome format --write ."
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.80.6",
-    "@earendil-works/pi-ai": "0.80.6",
+    "@earendil-works/pi-agent-core": "0.80.10",
+    "@earendil-works/pi-ai": "0.80.10",
     "loglayer": "^9.3.0"
   },
   "devDependencies": {
