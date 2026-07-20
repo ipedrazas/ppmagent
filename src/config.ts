@@ -87,6 +87,9 @@ export interface Config {
    */
   dbxcliQueryLimit: number;
 
+  /** `pulse` binary (path or name on PATH) for deploying/managing Docker stacks on remote nodes. */
+  pulseBin: string;
+
   /** `proteos` binary (path or name on PATH) for the ProteOS task lane. */
   proteosBin: string;
   /**
@@ -346,6 +349,8 @@ export function loadConfig(env: Env = process.env): Config {
     dbxcliBin: optional(env, "PPMA_DBXCLI_BIN", "dbxcli"),
     dbxcliConfig: optional(env, "PPMA_DBXCLI_CONFIG", ""),
     dbxcliQueryLimit: int(env, "PPMA_DBXCLI_QUERY_LIMIT", 100),
+
+    pulseBin: optional(env, "PPMA_PULSE_BIN", "pulse"),
 
     proteosBin: optional(env, "PPMA_PROTEOS_BIN", "proteos"),
     proteosUrl: optional(env, "PROTEOS_URL", ""),
