@@ -104,6 +104,8 @@ This repo uses [Task](https://taskfile.dev). Run `task --list`:
 | Task | What it does |
 |---|---|
 | `task install` | Install deps (frozen lockfile) |
+| `task deps` | Install everything needed to develop and run the project (Node deps, Biome, tsc) |
+| `task setup` | One-time project setup — `deps` plus a local `.env` from `.env.example` |
 | `task typecheck` | `tsc --noEmit` |
 | `task lint` | Biome lint + format check |
 | `task format` | Apply Biome fixes |
