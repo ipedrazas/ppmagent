@@ -18,6 +18,7 @@ export function makeTestConfig(overrides: Partial<Config> = {}): Config {
     dbxcliBin: "dbxcli",
     dbxcliConfig: "",
     dbxcliQueryLimit: 100,
+    pulseBin: "pulse",
     proteosBin: "proteos",
     proteosUrl: "",
     proteosWatchIntervalMs: 30_000,

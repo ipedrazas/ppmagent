@@ -16,6 +16,8 @@ import { buildMemoryTools } from "./memory/tools.ts";
 import type { MetricsCollector } from "./metrics/collector.ts";
 import { ProteosClient } from "./proteos/proteos.ts";
 import { buildProteosTools } from "./proteos/tools.ts";
+import { PulseClient } from "./pulse/pulse.ts";
+import { buildPulseTools } from "./pulse/tools.ts";
 import type { ReminderStore } from "./reminder/store.ts";
 import { buildReminderTools } from "./reminder/tools.ts";
 import { buildAskUserTool } from "./tools/ask-user.ts";
@@ -58,6 +60,10 @@ const MUTATING_TOOLS = new Set<string>([
   "proteos_git_commit",
   "proteos_git_push",
   "proteos_git_pr",
+  // pulse mutations (image pull, compose up/down on a remote node)
+  "pulse_pull",
+  "pulse_up",
+  "pulse_down",
 ]);
 
 export const SYSTEM_PROMPT = `You are a Project / Product-Owner agent. You turn vague requests into well-scoped tracker tasks and keep structured, human-readable memory.
@@ -85,6 +91,9 @@ Delegating execution to ProteOS (proteos_* tools):
 - Flow: proteos_machines_list to get a machine id → proteos_project_ensure the repo onto it → proteos_task_run with a clear prompt. If no suitable machine exists, create one from a template (proteos_templates_list → proteos_machine_create — it provisions billable compute, so the user must confirm); if a machine is stopped, proteos_machine_start it. task_run returns a task id immediately and does NOT wait — by default, just report the id and end your turn; do not loop on proteos_task_get to wait for it. Only pass wait:true to task_run (or poll manually) when the user explicitly asks to wait for or be notified about the result. Every proteos call takes the machine id explicitly; task/git/project calls also take the project (the repo's workspace directory name).
 - To land the work: review with proteos_git_status/proteos_git_diff, then proteos_git_branch, proteos_git_commit, proteos_git_push (setUpstream on a new branch), and proteos_git_pr. The task agent never commits on its own — that is the explicit gate.
 - After dispatching or landing work for a tracker task, record the link (task id / PR url) in memory with memory_write, never the live status.
+
+Deploying with pulse (pulse_* tools):
+- pulse manages Docker stacks on remote nodes/VMs. Use pulse_nodes to see what's available, pulse_ps/pulse_images to inspect a node, pulse_pull to fetch a newer image, and pulse_up to (re)deploy the compose stack (e.g. "Redeploy ProteOS" → pulse_up with that node's compose file). pulse_down stops a stack. pulse_up/pulse_down change what is running, so they require user confirmation.
 
 Reminders (reminder_* tools):
 - When the user says "remind me [time] about X" or "remind me to X [time]", call reminder_create with their message and when.
@@ -147,6 +156,7 @@ export interface BuiltAgent {
   ppm: PpmClient;
   databox: DataboxClient;
   proteos: ProteosClient;
+  pulse: PulseClient;
   /** Memory-injection seam; `sliceTokens()` returns the ephemeral slice size for token accounting. */
   memoryContext: MemoryContextHook;
 }
@@ -280,6 +290,11 @@ export function buildAgent(
     maxOutputBytes,
     githubToken: config.githubToken || undefined,
   });
+  const pulse = new PulseClient({
+    bin: config.pulseBin,
+    logger,
+    maxOutputBytes,
+  });
 
   const tools = [
     ...buildMemoryTools(ppm),
@@ -291,6 +306,7 @@ export function buildAgent(
       onTaskDispatched: overrides.onTaskDispatched,
       confirmationStore: overrides.confirmationStore,
     }),
+    ...buildPulseTools(pulse, { confirmationStore: overrides.confirmationStore }),
     ...(overrides.reminderStore ? buildReminderTools(overrides.reminderStore) : []),
     buildAskUserTool(ppm),
   ];
@@ -315,5 +331,5 @@ export function buildAgent(
 
   traceTools(agent, logger, overrides.recorder, overrides.metrics);
 
-  return { agent, model, ppm, databox, proteos, memoryContext };
+  return { agent, model, ppm, databox, proteos, pulse, memoryContext };
 }
