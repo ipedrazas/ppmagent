@@ -164,3 +164,77 @@ describe("CommandRouter — /describe", () => {
     expect(replies?.[0]).toContain("/describe");
   });
 });
+
+describe("CommandRouter — /explain", () => {
+  test("with no argument, prompts the user to specify a command", async () => {
+    const { router } = makeRouter();
+    const replies = await router.route(1, "/explain");
+    expect(replies?.[0]).toContain("Usage: /explain");
+  });
+
+  test("explains a known command with usage and an example", async () => {
+    const { router } = makeRouter();
+    const replies = await router.route(1, "/explain describe");
+    expect(replies?.[0]).toContain("/describe");
+    expect(replies?.[0]).toContain("Usage: /describe");
+    expect(replies?.[0]).toContain("Example:");
+  });
+
+  test("accepts a leading slash on the command name", async () => {
+    const { router } = makeRouter();
+    const replies = await router.route(1, "/explain /tools");
+    expect(replies?.[0]).toContain("/tools");
+  });
+
+  test("is case-insensitive", async () => {
+    const { router } = makeRouter();
+    const replies = await router.route(1, "/explain DESCRIBE");
+    expect(replies?.[0]).toContain("/describe");
+  });
+
+  test("an unknown command returns an error listing available commands", async () => {
+    const { router } = makeRouter();
+    const replies = await router.route(1, "/explain bogus");
+    expect(replies?.[0]).toContain('Unknown command "/bogus"');
+    expect(replies?.[0]).toContain("help");
+    expect(replies?.[0]).toContain("tools");
+  });
+
+  test("/help lists /explain", async () => {
+    const { router } = makeRouter();
+    const replies = await router.route(1, "/help");
+    expect(replies?.[0]).toContain("/explain");
+  });
+
+  test("/explain@botname (group chat form) explains the command", async () => {
+    const { router } = makeRouter();
+    const replies = await router.route(1, "/explain@mybot tools");
+    expect(replies?.[0]).toContain("/tools");
+  });
+});
+
+describe("CommandRouter — /cmds", () => {
+  test("lists every registered command", async () => {
+    const { router } = makeRouter();
+    const replies = await router.route(1, "/cmds");
+    expect(replies?.[0]).toContain("/project");
+    expect(replies?.[0]).toContain("/describe");
+    expect(replies?.[0]).toContain("/explain");
+    expect(replies?.[0]).toContain("/cmds");
+  });
+
+  test("new commands appear automatically without extra wiring", async () => {
+    const { router } = makeRouter();
+    const replies = await router.route(1, "/cmds");
+    const { COMMANDS } = await import("../src/commands/cmds.ts");
+    for (const c of COMMANDS) {
+      expect(replies?.[0]).toContain(c.usage);
+    }
+  });
+
+  test("/cmds@botname (group chat form) lists commands", async () => {
+    const { router } = makeRouter();
+    const replies = await router.route(1, "/cmds@mybot");
+    expect(replies?.[0]).toContain("/help");
+  });
+});
