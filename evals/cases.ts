@@ -54,7 +54,7 @@ function expectsClarify(report: SessionReport, toolCalls: string[]): JudgeVerdic
  * downstream success isn't graded here — only the decision to act rather than ask).
  */
 function expectsAction(requiredTools: string[]) {
-  return (report: SessionReport, toolCalls: string[]): JudgeVerdict => {
+  return (_report: SessionReport, toolCalls: string[]): JudgeVerdict => {
     if (toolCalls.includes("ask_user")) {
       return {
         pass: false,
