@@ -171,6 +171,12 @@ export class TurnRunner {
     }
 
     const outbound: string[] = [];
+    // Text from any tool that terminates the loop (ask_user, confirmation gates),
+    // captured separately so it can be appended after the assistant's leading
+    // context text — the two are pulled from different places at different
+    // times, but the context text always precedes the terminating tool call
+    // within the same assistant message and must stay first in the reply.
+    const terminatingReplies: string[] = [];
     const stopTyping = this.startTyping(chatId);
 
     // Per-turn tool budget — block and abort when the per-turn call count is exceeded.
@@ -193,9 +199,8 @@ export class TurnRunner {
 
     const unsubscribe = this.deps.built.agent.subscribe((event) => {
       if (event.type === "tool_execution_end" && isTerminating(event.result)) {
-        // Capture text from any tool that terminates the loop (ask_user, confirmation gates).
         const t = extractToolText(event.result);
-        if (t) outbound.push(t);
+        if (t) terminatingReplies.push(t);
       }
     });
 
@@ -264,6 +269,7 @@ export class TurnRunner {
 
     const assistant = lastAssistantText(session.messages);
     if (assistant) outbound.push(assistant);
+    outbound.push(...terminatingReplies);
 
     if (turnCostExceeded) {
       outbound.push(

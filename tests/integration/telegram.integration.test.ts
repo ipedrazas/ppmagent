@@ -7,6 +7,7 @@ import {
   createModels,
   fauxAssistantMessage,
   fauxProvider,
+  fauxText,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { buildAgent } from "../../src/agent.ts";
@@ -215,6 +216,64 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
     expect(ctx.data.openQuestions.map((q) => q.body)).toContain(
       "What metric defines onboarding success?",
     );
+  });
+
+  test("a clarifying question keeps the leading context text before the question (TAV-136)", async () => {
+    faux.setResponses([
+      fauxAssistantMessage([
+        fauxText(
+          "This is a new tab like the existing Analyse, Diff, Extract, Tools tabs. Let me clarify the scope a bit.",
+        ),
+        fauxToolCall("ask_user", {
+          question: "For the Visualizer tab — what should the tree represent?",
+          project: PROJECT,
+        }),
+      ]),
+    ]);
+    const store = new SessionStore(join(root, "session.json"));
+    const { bot } = makeBot(store);
+    await bot.handleMessage(CHAT, "/project onboarding");
+    const replies = await bot.handleMessage(CHAT, "add a visualizer tab");
+
+    // Chronological order: the model's context/reasoning text first, then the
+    // clarifying question it asks off the back of that reasoning.
+    expect(replies).toEqual([
+      "This is a new tab like the existing Analyse, Diff, Extract, Tools tabs. Let me clarify the scope a bit.",
+      "For the Visualizer tab — what should the tree represent?",
+    ]);
+  });
+
+  test("multiple clarifying questions across turns each keep context before the question (TAV-136)", async () => {
+    const store = new SessionStore(join(root, "session.json"));
+    const { bot } = makeBot(store);
+    await bot.handleMessage(CHAT, "/project onboarding");
+
+    faux.setResponses([
+      fauxAssistantMessage([
+        fauxText("Let me clarify the scope a bit."),
+        fauxToolCall("ask_user", {
+          question: "What should the tree represent?",
+          project: PROJECT,
+        }),
+      ]),
+    ]);
+    const first = await bot.handleMessage(CHAT, "add a visualizer tab");
+    expect(first).toEqual(["Let me clarify the scope a bit.", "What should the tree represent?"]);
+
+    faux.setResponses([
+      fauxAssistantMessage([
+        fauxText("One more thing before I start."),
+        fauxToolCall("ask_user", {
+          question: "Should it support drag-and-drop reordering?",
+          project: PROJECT,
+        }),
+      ]),
+    ]);
+    const second = await bot.handleMessage(CHAT, "it should show the dependency graph");
+    expect(second).toEqual([
+      "One more thing before I start.",
+      "Should it support drag-and-drop reordering?",
+    ]);
   });
 
   test("/help lists all slash commands", async () => {
