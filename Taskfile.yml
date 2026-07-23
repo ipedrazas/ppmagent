@@ -30,6 +30,20 @@ tasks:
     cmds:
       - bun install
 
+  deps:
+    desc: Install everything needed to develop and run the project (Node deps, Biome, tsc)
+    cmds:
+      - bun install
+      - "{{.BIN}}/biome --version"
+      - "{{.BIN}}/tsc --version"
+
+  setup:
+    desc: One-time project setup — install deps and prepare a local .env
+    cmds:
+      - task: deps
+      - cmd: test -f .env || cp .env.example .env
+      - 'echo "Setup complete. Fill in secrets in .env, then run: task dev"'
+
   typecheck:
     desc: Typecheck with tsc (no emit)
     cmds:
