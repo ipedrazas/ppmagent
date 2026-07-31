@@ -1,4 +1,4 @@
-import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentOptions, type StreamFn } from "@earendil-works/pi-agent-core";
 import {
   type AssistantMessage,
   createProvider,
@@ -7,7 +7,7 @@ import {
   type TextContent,
 } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
+import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import type { Config } from "./config.ts";
 import { type Logger, nullLogger } from "./logger.ts";
 import { type MemoryContextHook, makeTransformContext } from "./memory/context.ts";
@@ -135,18 +135,114 @@ function resolveOllamaModel(config: Config): Model<"openai-completions"> {
   };
 }
 
+/** Catalog ids for a provider, ranked so the closest matches to `wanted` come first. */
+function suggestModelIds(provider: string, wanted: string): string[] {
+  const ids = getBuiltinModels(provider as "anthropic").map((m) => m.id);
+  // A mis-typed id is usually a real id plus/minus a suffix (a date stamp, a
+  // `-latest`), so rank by shared prefix length before falling back to
+  // alphabetical order.
+  const sharedPrefix = (id: string): number => {
+    let i = 0;
+    while (i < id.length && i < wanted.length && id[i] === wanted[i]) i++;
+    return i;
+  };
+  return ids.sort((a, b) => sharedPrefix(b) - sharedPrefix(a) || a.localeCompare(b)).slice(0, 10);
+}
+
+/**
+ * Context/output assumptions for a model pi's catalog does not know. They only
+ * feed compaction, so they are deliberately conservative — set
+ * PPMA_COMPACTION_TOKEN_THRESHOLD explicitly when running an uncatalogued model.
+ */
+const UNCATALOGUED_CONTEXT_WINDOW = 128_000;
+const UNCATALOGUED_MAX_TOKENS = 8_192;
+
+/**
+ * Build a descriptor for a model id the catalog does not list, by borrowing the
+ * endpoint and wire API from any catalogued model of the same provider. Returns
+ * undefined when the provider is unknown or does not speak
+ * `openai-completions` — those (e.g. anthropic) need provider-specific request
+ * shaping we cannot safely synthesize.
+ *
+ * A provider's catalog snapshot ages faster than the pinned pi-ai release, so a
+ * brand-new model id (e.g. a dated snapshot published after the pin) is a
+ * legitimate config, not a typo. Costs are zeroed because they are genuinely
+ * unknown — see the warning in {@link resolveModel}.
+ */
+function uncataloguedModel(config: Config): Model<"openai-completions"> | undefined {
+  // The cast widens away the catalog's per-provider `api` literal so the runtime
+  // check below is expressible (config supplies the provider at runtime).
+  const [sample] = getBuiltinModels(config.provider as "anthropic") as Model<any>[];
+  const baseUrl = config.baseUrl || sample?.baseUrl;
+  if (!baseUrl || (sample && sample.api !== "openai-completions")) return undefined;
+  return {
+    id: config.model,
+    name: config.model,
+    api: "openai-completions",
+    provider: config.provider,
+    baseUrl,
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: UNCATALOGUED_CONTEXT_WINDOW,
+    maxTokens: UNCATALOGUED_MAX_TOKENS,
+  };
+}
+
 /**
  * Resolve the configured provider + model to a runtime `Model`. Ollama is
  * handled specially (see {@link resolveOllamaModel}); every other provider
  * goes through `getBuiltinModel`, which is strongly typed over the built-in
  * catalog — the casts let config-supplied values flow through (it is a
  * runtime catalog lookup).
+ *
+ * A catalog miss must never return `undefined`: pi-agent-core silently
+ * substitutes a placeholder model (`api: "unknown"`), every turn then fails
+ * inside the agent loop with "No API provider registered for api: unknown", and
+ * pi swallows that into an empty assistant message — a bot that answers
+ * "(no reply)" to everything with nothing in the logs. So a miss either
+ * synthesizes a descriptor for the provider's endpoint (loudly — the id may
+ * simply be newer than the pinned catalog) or throws.
  */
-export function resolveModel(config: Config): Model<any> {
+export function resolveModel(config: Config, logger: Logger = nullLogger): Model<any> {
   if (config.provider === "ollama") {
     return resolveOllamaModel(config);
   }
-  return getBuiltinModel(config.provider as "anthropic", config.model as "claude-sonnet-4-6");
+  const model = getBuiltinModel(
+    config.provider as "anthropic",
+    config.model as "claude-sonnet-4-6",
+  );
+  if (model) return model;
+
+  const synthesized = uncataloguedModel(config);
+  if (synthesized) {
+    logger
+      .withMetadata({
+        model: config.model,
+        provider: config.provider,
+        baseUrl: synthesized.baseUrl,
+        assumedContextWindow: synthesized.contextWindow,
+        closestCatalogIds: suggestModelIds(config.provider, config.model).slice(0, 3),
+      })
+      .warn(
+        `Model "${config.model}" is not in pi's catalog; calling ${config.provider} with it ` +
+          "anyway. Cost is reported as $0 (so PPMA_TURN_MAX_COST_USD / " +
+          "PPMA_SESSION_MAX_COST_USD stop enforcing) and the context window is an " +
+          "assumption. If the provider does not know the id either it will reject the " +
+          "call — that surfaces as a `model turn failed` log line, not a crash.",
+      );
+    return synthesized;
+  }
+
+  const suggestions = suggestModelIds(config.provider, config.model);
+  throw new Error(
+    `Unknown model "${config.model}" for provider "${config.provider}" — ` +
+      "it is not in pi's built-in catalog and cannot be called generically " +
+      "(this provider does not use the OpenAI-completions wire format). " +
+      "Set PPMA_MODEL to a known id" +
+      (suggestions.length > 0 ? `, e.g. one of: ${suggestions.join(", ")}` : "") +
+      ".",
+  );
 }
 
 export interface BuiltAgent {
@@ -189,6 +285,76 @@ function assistantText(content: AssistantMessage["content"]): string {
     .filter((c): c is TextContent => c.type === "text")
     .map((c) => c.text)
     .join("");
+}
+
+/** Byte length of a value once serialized, or 0 if it cannot be serialized. */
+function jsonSize(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Shape-agnostic summary of a provider request body: enough to see *that* a
+ * request went out and roughly what was in it, without dumping the whole
+ * transcript into the log on every turn. The full body is logged separately at
+ * `trace`.
+ */
+function payloadSummary(payload: unknown): Record<string, unknown> {
+  const body = payload as
+    | { model?: unknown; messages?: unknown; tools?: unknown; stream?: unknown }
+    | null
+    | undefined;
+  return {
+    payloadModel: typeof body?.model === "string" ? body.model : undefined,
+    messages: Array.isArray(body?.messages) ? body.messages.length : undefined,
+    tools: Array.isArray(body?.tools) ? body.tools.length : undefined,
+    stream: typeof body?.stream === "boolean" ? body.stream : undefined,
+    bytes: jsonSize(payload),
+  };
+}
+
+/**
+ * Log every provider request and response. `debug` gives the one-line "we sent
+ * N messages to model X / the endpoint answered HTTP 200" pair that answers
+ * "is the message going out, is anything coming back"; `trace` adds the full
+ * request body and response headers for when the summary is not enough. A
+ * non-2xx status is logged at `warn` — pi retries some of those internally, so
+ * without this they are invisible even when the turn eventually fails.
+ */
+function llmHooks(logger: Logger): Pick<AgentOptions, "onPayload" | "onResponse"> {
+  const log = logger.child().withContext({ component: "llm" });
+  return {
+    onPayload: (payload, model) => {
+      const line = log.withMetadata({
+        model: model.id,
+        provider: model.provider,
+        api: model.api,
+        baseUrl: model.baseUrl,
+        ...payloadSummary(payload),
+      });
+      line.debug("llm request");
+      log
+        .withMetadata({ model: model.id, payload: clipPayload(payload) })
+        .trace("llm request body");
+      // Returning undefined leaves the payload untouched — this hook only observes.
+      return undefined;
+    },
+    onResponse: (response, model) => {
+      const line = log.withMetadata({
+        model: model.id,
+        provider: model.provider,
+        status: response.status,
+      });
+      if (response.status >= 400) line.warn("llm response (error status)");
+      else line.debug("llm response");
+      log
+        .withMetadata({ model: model.id, status: response.status, headers: response.headers })
+        .trace("llm response headers");
+    },
+  };
 }
 
 /**
@@ -247,10 +413,35 @@ function traceTools(
       const { message } = event;
       if (!("role" in message) || message.role !== "assistant") return;
       metrics?.recordUsage(message.usage);
+      const text = assistantText(message.content);
+      // pi-agent-core never throws out of `prompt()`: a failed run is turned
+      // into an assistant message with empty text, stopReason "error", and the
+      // real cause in `errorMessage`. Logging it here is the only place that
+      // cause is visible — otherwise the turn just produces no reply.
+      if (message.errorMessage) {
+        log
+          .withMetadata({
+            model: message.model,
+            provider: message.provider,
+            stopReason: message.stopReason,
+            error: message.errorMessage,
+          })
+          .error("model turn failed");
+      } else {
+        log
+          .withMetadata({
+            model: message.model,
+            stopReason: message.stopReason,
+            chars: text.length,
+            totalTokens: message.usage.totalTokens,
+          })
+          .debug("model turn");
+      }
       recorder?.record({
         type: "assistant_message",
-        text: clipPayload(assistantText(message.content)),
+        text: clipPayload(text),
         stopReason: message.stopReason,
+        ...(message.errorMessage ? { error: message.errorMessage } : {}),
         totalTokens: message.usage.totalTokens,
         costUsd: message.usage.cost.total,
       });
@@ -311,13 +502,27 @@ export function buildAgent(
     buildAskUserTool(ppm),
   ];
 
-  const model = overrides.model ?? resolveModel(config);
+  const model = overrides.model ?? resolveModel(config, logger);
   const memoryContext = makeTransformContext({
     ppm,
     recent: config.contextRecent,
     getActiveProject,
     logger,
   });
+  logger
+    .child()
+    .withContext({ component: "agent" })
+    .withMetadata({
+      model: model.id,
+      provider: model.provider,
+      api: model.api,
+      baseUrl: model.baseUrl,
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens,
+      tools: tools.length,
+    })
+    .info("agent model resolved");
+
   const agent = new Agent({
     initialState: {
       systemPrompt: SYSTEM_PROMPT,
@@ -327,6 +532,7 @@ export function buildAgent(
     transformContext: memoryContext.hook,
     streamFn: overrides.streamFn,
     getApiKey: () => config.apiKey,
+    ...llmHooks(logger),
   });
 
   traceTools(agent, logger, overrides.recorder, overrides.metrics);

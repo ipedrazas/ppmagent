@@ -197,10 +197,21 @@ export class TurnRunner {
       };
     }
 
+    // Cause of a failed model call. pi-agent-core swallows provider errors: a
+    // failed run is reported as an assistant message with empty text and the
+    // real cause in `errorMessage`, and `prompt()` resolves normally. Without
+    // capturing it here the turn silently produces "(no reply)" — the same
+    // symptom for a bad model id, a rejected API key, and a provider outage.
+    let modelError: string | undefined;
     const unsubscribe = this.deps.built.agent.subscribe((event) => {
       if (event.type === "tool_execution_end" && isTerminating(event.result)) {
         const t = extractToolText(event.result);
         if (t) terminatingReplies.push(t);
+      } else if (event.type === "turn_end") {
+        const { message } = event;
+        if ("role" in message && message.role === "assistant" && message.errorMessage) {
+          modelError = message.errorMessage;
+        }
       }
     });
 
@@ -284,10 +295,32 @@ export class TurnRunner {
 
     session.persist();
 
-    if (outbound.length === 0) outbound.push("(no reply)");
+    if (outbound.length === 0) {
+      if (modelError) {
+        turnLog
+          .withMetadata({
+            model: this.deps.built.model.id,
+            provider: this.deps.built.model.provider,
+          })
+          .error(`model call failed: ${modelError}`);
+        outbound.push(
+          `⚠️ The model call failed, so there is no answer to send.\n\n` +
+            `\`${modelError}\`\n\n` +
+            `Model: \`${this.deps.built.model.provider}/${this.deps.built.model.id}\``,
+        );
+      } else {
+        turnLog.warn("turn produced no reply and no model error");
+        outbound.push("(no reply)");
+      }
+    }
     await this.deps.send(chatId, outbound);
     const durationMs = Math.round(performance.now() - startedAt);
-    recorder?.record({ type: "turn_end", durationMs, replies: outbound.length });
+    recorder?.record({
+      type: "turn_end",
+      durationMs,
+      replies: outbound.length,
+      ...(modelError ? { modelError } : {}),
+    });
     this.deps.metrics?.recordTurn({ durationMs });
     turnLog.withMetadata({ replies: outbound.length, durationMs }).info("message handled");
     return outbound;
