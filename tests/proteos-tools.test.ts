@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PollGate } from "../src/proteos/poll-gate.ts";
 import { ProteosClient, ProteosError } from "../src/proteos/proteos.ts";
 import { buildProteosTools } from "../src/proteos/tools.ts";
 import { ArgInjectionError } from "../src/sanitize.ts";
@@ -349,5 +350,128 @@ describe("ProteosClient GITHUB_TOKEN forwarding", () => {
     const client = new ProteosClient({ bin });
     const out = await client.listMachines();
     expect(out).toBe("GITHUB_TOKEN=");
+  });
+});
+
+describe("proteos status-read rate limiting", () => {
+  let dir: string;
+  let bin: string;
+  let callLog: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "proteos-poll-test-"));
+    bin = join(dir, "proteos");
+    callLog = join(dir, "calls.log");
+    // Counts every invocation so we can assert the CLI is not re-run when throttled.
+    await writeFile(
+      bin,
+      `#!/usr/bin/env bash\necho "call" >> ${callLog}\necho "status: running"\n`,
+    );
+    await chmod(bin, 0o755);
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function callCount(): Promise<number> {
+    const text = await readFile(callLog, "utf8").catch(() => "");
+    return text.split("\n").filter(Boolean).length;
+  }
+
+  /** Tools sharing one gate over a clock the test controls. */
+  function toolsWithClock() {
+    let now = 5_000_000;
+    const proteos = new ProteosClient({ bin });
+    const tools = buildProteosTools(proteos, { pollGate: new PollGate(() => now) });
+    const pick = (name: string) => {
+      const tool = tools.find((t) => t.name === name);
+      if (!tool) throw new Error(`${name} not found`);
+      return tool;
+    };
+    return { pick, advance: (ms: number) => (now += ms) };
+  }
+
+  function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
+    return result.content.map((c) => c.text ?? "").join("");
+  }
+
+  test("a second immediate task_get does not reach the CLI", async () => {
+    const { pick } = toolsWithClock();
+    const getTask = pick("proteos_task_get");
+    const before = await callCount();
+
+    const first = await getTask.execute("c1", { machine: "m-1", task: "t-1" });
+    expect(textOf(first)).toContain("status: running");
+    expect(await callCount()).toBe(before + 1);
+
+    const second = await getTask.execute("c2", { machine: "m-1", task: "t-1" });
+    expect(await callCount()).toBe(before + 1);
+    expect(textOf(second)).toContain("Not checked");
+    expect(textOf(second)).toContain("Wait at least 1s");
+    // The last known status still comes back, so the model is not left blind.
+    expect(textOf(second)).toContain("status: running");
+  });
+
+  test("a caller that keeps polling has its turn terminated", async () => {
+    const { pick } = toolsWithClock();
+    const getTask = pick("proteos_task_get");
+    await getTask.execute("c1", { machine: "m-1", task: "t-2" });
+
+    const blocked = await getTask.execute("c2", { machine: "m-1", task: "t-2" });
+    expect(blocked.terminate).toBeFalsy();
+
+    const again = await getTask.execute("c3", { machine: "m-1", task: "t-2" });
+    expect(again.terminate).toBe(true);
+    // A terminating tool's text is what the user receives, so it must read as a
+    // reply to them, not as an instruction aimed at the model.
+    expect(textOf(again)).toContain("I stopped checking task t-2");
+    expect(textOf(again)).not.toContain("end your turn");
+  });
+
+  test("the check goes through once the backoff has elapsed", async () => {
+    const { pick, advance } = toolsWithClock();
+    const getTask = pick("proteos_task_get");
+    await getTask.execute("c1", { machine: "m-1", task: "t-3" });
+    const after = await callCount();
+
+    advance(1_000);
+    const allowed = await getTask.execute("c2", { machine: "m-1", task: "t-3" });
+    expect(textOf(allowed)).toContain("status: running");
+    expect(await callCount()).toBe(after + 1);
+
+    // Second interval is 10s, so 1s is no longer enough.
+    advance(1_000);
+    const throttled = await getTask.execute("c3", { machine: "m-1", task: "t-3" });
+    expect(textOf(throttled)).toContain("Wait at least");
+  });
+
+  test("different tasks are rate-limited independently", async () => {
+    const { pick } = toolsWithClock();
+    const getTask = pick("proteos_task_get");
+    await getTask.execute("c1", { machine: "m-1", task: "t-4" });
+    const other = await getTask.execute("c2", { machine: "m-1", task: "t-5" });
+    expect(textOf(other)).toContain("status: running");
+  });
+
+  test("tasks_list is throttled too, so it is not a way around the backoff", async () => {
+    const { pick } = toolsWithClock();
+    const getTask = pick("proteos_task_get");
+    const listTasks = pick("proteos_tasks_list");
+    await getTask.execute("c1", { machine: "m-1", task: "t-6" });
+    await listTasks.execute("c2", { machine: "m-1" });
+    const second = await listTasks.execute("c3", { machine: "m-1" });
+    expect(textOf(second)).toContain("Not checked");
+  });
+
+  test("dispatching a task clears the backoff so its status can be read once", async () => {
+    const { pick } = toolsWithClock();
+    const listTasks = pick("proteos_tasks_list");
+    const taskRun = pick("proteos_task_run");
+    await listTasks.execute("c1", { machine: "m-1" });
+    expect(textOf(await listTasks.execute("c2", { machine: "m-1" }))).toContain("Not checked");
+
+    await taskRun.execute("c3", { machine: "m-1", project: "p", prompt: "do it" });
+    expect(textOf(await listTasks.execute("c4", { machine: "m-1" }))).toContain("status: running");
   });
 });
