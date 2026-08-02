@@ -13,7 +13,7 @@
 
 import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
-import { resolveModel } from "../src/agent.ts";
+import { defaultStreamFn, resolveModel } from "../src/agent.ts";
 import type { Config } from "../src/config.ts";
 import { defineTool, toolResult } from "../src/tool-helpers.ts";
 import type { EvalOutcome } from "./harness.ts";
@@ -124,7 +124,7 @@ export async function judgeCriterion(
       model: overrides.model ?? resolveModel(config),
       tools: [tool],
     },
-    streamFn: overrides.streamFn,
+    streamFn: overrides.streamFn ?? defaultStreamFn(config),
     getApiKey: () => config.apiKey,
   });
 
