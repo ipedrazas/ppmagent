@@ -3,6 +3,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, toolResult } from "../tool-helpers.ts";
 import { CONFIRM_SUFFIX, type ConfirmationStore } from "../tools/confirmation.ts";
 import { sanitizeLine, sanitizePrompt, sanitizeString } from "../tools/sanitize.ts";
+import { BLOCKS_BEFORE_TERMINATE, formatWait, type PollDecision, PollGate } from "./poll-gate.ts";
 import type { ProteosClient } from "./proteos.ts";
 import { extractTaskId } from "./watcher.ts";
 
@@ -11,6 +12,18 @@ export interface ProteosToolsOptions {
   onTaskDispatched?: (machine: string, taskId: string, project: string, label: string) => void;
   /** When set, machine create, git push, and git PR require user confirmation before executing. */
   confirmationStore?: ConfirmationStore;
+  /** Rate limiter for status reads. Injectable so tests can drive its clock. */
+  pollGate?: PollGate;
+}
+
+/** Poll-gate key for one task's status. */
+function taskKey(machine: string, task: string): string {
+  return `task:${machine}/${task}`;
+}
+
+/** Poll-gate key for a machine's task listing. */
+function tasksKey(machine: string): string {
+  return `tasks:${machine}`;
 }
 
 /**
@@ -30,8 +43,44 @@ export interface ProteosToolsOptions {
  * `task watch` (live event stream) is intentionally not exposed: it blocks for up
  * to 30m, which would freeze the chat. Use proteos_task_get for a one-off check,
  * or proteos_task_run's wait:true for background tracking, instead.
+ *
+ * Status reads go through a {@link PollGate}: repeated checks of the same task or
+ * machine back off (1s, 10s, 30s, 90s, 5m) and a caller that keeps hammering has
+ * its turn terminated. The prompt asks for fire-and-forget; this enforces it.
  */
 export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOptions): AgentTool[] {
+  const pollGate = opts?.pollGate ?? new PollGate();
+
+  /**
+   * Result returned instead of an actual status read when the caller is polling
+   * too fast. Carries the last known output so the model still has something to
+   * report, plus the wait before the next check is allowed.
+   *
+   * The first block is a nudge the model can act on. Once it has ignored
+   * {@link BLOCKS_BEFORE_TERMINATE} of them it is looping, so the turn is ended —
+   * and since a terminating tool's text is what the user receives, that message
+   * is written for them rather than for the model.
+   */
+  function throttledResult(subject: string, decision: PollDecision) {
+    const age = formatWait(decision.ageMs ?? 0);
+    const wait = formatWait(decision.waitMs);
+    const last = (decision.lastOutput ?? "").trim();
+    const terminate = decision.blocked >= BLOCKS_BEFORE_TERMINATE;
+
+    const lines = terminate
+      ? [
+          `I stopped checking ${subject} — it was last read ${age} ago and status checks are rate-limited to keep from hammering ProteOS. Ask me again in ${wait} or so, or dispatch with wait:true next time and I'll message you when it finishes.`,
+        ]
+      : [
+          `Not checked: ${subject} was already checked ${age} ago and status reads are rate-limited.`,
+          `Do not poll in a loop. Wait at least ${wait} before checking again — end your turn, report what is known, and check later if the user asks.`,
+          `To be told when the task finishes instead, dispatch with wait:true.`,
+        ];
+    if (last) lines.push("", `Last known status (${age} ago):`, last);
+
+    return toolResult(lines.join("\n"), { output: "" }, { terminate });
+  }
+
   // ── Discovery ──
 
   const listMachines = defineTool({
@@ -213,11 +262,13 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
     execute: async (_id, params, signal) => {
       const prompt = sanitizePrompt(params.prompt);
       const out = await proteos.taskRun({ ...params, prompt }, signal);
-      if (params.wait && opts?.onTaskDispatched) {
-        const taskId = extractTaskId(out);
-        if (taskId) {
-          opts.onTaskDispatched(params.machine, taskId, params.project, prompt.slice(0, 200));
-        }
+      const taskId = extractTaskId(out);
+      // A dispatch changes what a status read would say, so let the new task be
+      // checked once immediately (the machine's task list too).
+      if (taskId) pollGate.reset(taskKey(params.machine, taskId));
+      pollGate.reset(tasksKey(params.machine));
+      if (params.wait && opts?.onTaskDispatched && taskId) {
+        opts.onTaskDispatched(params.machine, taskId, params.project, prompt.slice(0, 200));
       }
       return toolResult(out, { output: out });
     },
@@ -226,11 +277,17 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
   const listTasks = defineTool({
     name: "proteos_tasks_list",
     description:
-      "List a machine's agent tasks, newest first (id, status, provider, project, created).",
+      "List a machine's agent tasks, newest first (id, status, provider, project, created). Rate-limited like proteos_task_get — one listing per machine, then a growing wait; it is not a way around the poll backoff.",
     label: "List tasks",
     parameters: Type.Object({ machine: Type.String() }),
     execute: async (_id, params, signal) => {
+      const key = tasksKey(params.machine);
+      const decision = pollGate.check(key);
+      if (!decision.allowed) {
+        return throttledResult(`the task list for ${params.machine}`, decision);
+      }
       const out = await proteos.tasksList(params.machine, signal);
+      pollGate.record(key, out);
       return toolResult(out, { output: out });
     },
   });
@@ -238,14 +295,20 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
   const getTask = defineTool({
     name: "proteos_task_get",
     description:
-      "Show one task's status and, when finished, its result (session id, usage/cost, summary, error). Use this for a one-off status check on a task dispatched with proteos_task_run; call it again later if the task is still running rather than looping on it in this turn.",
+      "Show one task's status and, when finished, its result (session id, usage/cost, summary, error). A one-off check only: repeated checks of the same task are rate-limited with a growing backoff (1s, 10s, 30s, 90s, 5m) and refused in between, so never loop on this waiting for a task to finish — report the status and end your turn. Use proteos_task_run's wait:true when the user wants to be notified on completion.",
     label: "Get task",
     parameters: Type.Object({
       machine: Type.String(),
       task: Type.String({ description: "task id, e.g. t-456" }),
     }),
     execute: async (_id, params, signal) => {
+      const key = taskKey(params.machine, params.task);
+      const decision = pollGate.check(key);
+      if (!decision.allowed) {
+        return throttledResult(`task ${params.task}`, decision);
+      }
       const out = await proteos.taskGet(params.machine, params.task, signal);
+      pollGate.record(key, out);
       return toolResult(out, { output: out });
     },
   });
@@ -253,7 +316,7 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
   const sendTask = defineTool({
     name: "proteos_task_send",
     description:
-      "Send a follow-up turn that resumes a finished task's agent session (e.g. 'now also update the tests'), continuing the same context. Asynchronous — returns once dispatched; poll with proteos_task_get.",
+      "Send a follow-up turn that resumes a finished task's agent session (e.g. 'now also update the tests'), continuing the same context. Asynchronous — returns once dispatched; report the id and end your turn rather than waiting on proteos_task_get.",
     label: "Send to task",
     parameters: Type.Object({
       machine: Type.String(),
@@ -267,6 +330,8 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
         sanitizePrompt(params.prompt),
         signal,
       );
+      // The task is running again — its status is worth one fresh read.
+      pollGate.reset(taskKey(params.machine, params.task));
       return toolResult(out, { output: out });
     },
   });
@@ -294,6 +359,7 @@ export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOpt
         });
       }
       const out = await proteos.taskCancel(params.machine, params.task, signal);
+      pollGate.reset(taskKey(params.machine, params.task));
       return toolResult(out, { output: out });
     },
   });
