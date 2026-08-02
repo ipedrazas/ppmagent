@@ -7,7 +7,11 @@ import {
   type TextContent,
 } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
+import {
+  builtinModels,
+  getBuiltinModel,
+  getBuiltinModels,
+} from "@earendil-works/pi-ai/providers/all";
 import type { Config } from "./config.ts";
 import { type Logger, nullLogger } from "./logger.ts";
 import { type MemoryContextHook, makeTransformContext } from "./memory/context.ts";
@@ -247,6 +251,24 @@ export function resolveModel(config: Config, logger: Logger = nullLogger): Model
   );
 }
 
+/**
+ * The stream function real (non-test) runs use.
+ *
+ * pi-agent-core made `streamFn` a required `Agent` option: omitting it no
+ * longer falls back to a provider registry, it throws "No default stream
+ * function configured" on the first turn. So the host owns that fallback now.
+ * It mirrors {@link resolveModel}: the built-in providers cover every
+ * catalogued and uncatalogued-but-catalogued-provider model, and Ollama gets
+ * the same synthesized provider {@link resolveOllamaModel} builds its
+ * descriptor from — otherwise `streamSimple` would reject its model with
+ * "Unknown provider".
+ */
+export function defaultStreamFn(config: Config): StreamFn {
+  const models = builtinModels();
+  if (config.provider === "ollama") models.setProvider(ollamaProvider(config.baseUrl));
+  return (model, context, options) => models.streamSimple(model, context, options);
+}
+
 export interface BuiltAgent {
   agent: Agent;
   /** The resolved model the agent runs on — also used by the compaction summarizer. */
@@ -264,7 +286,7 @@ export interface BuildAgentOverrides {
   model?: Model<any>;
   /**
    * Inject the stream function (e.g. a faux provider backed by a `Models`
-   * collection in tests). When omitted, pi-agent-core's default is used.
+   * collection in tests). When omitted, {@link defaultStreamFn} is used.
    */
   streamFn?: StreamFn;
   /** Root logger; child loggers are derived for the clients and tool tracing. */
@@ -532,7 +554,7 @@ export function buildAgent(
       tools,
     },
     transformContext: memoryContext.hook,
-    streamFn: overrides.streamFn,
+    streamFn: overrides.streamFn ?? defaultStreamFn(config),
     getApiKey: () => config.apiKey,
     ...llmHooks(logger),
   });
