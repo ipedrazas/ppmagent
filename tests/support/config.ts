@@ -26,6 +26,7 @@ export function makeTestConfig(overrides: Partial<Config> = {}): Config {
     telegramBotToken: "test",
     telegramAllowedChatId: undefined,
     sessionFile: "/tmp/session.json",
+    sessionBucket: null,
     compactionTokenThreshold: 0,
     logLevel: "info",
     logFormat: "json",

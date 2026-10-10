@@ -115,6 +115,11 @@ export interface Config {
   telegramAllowedChatId: number | undefined;
   /** Path to the durable session file. */
   sessionFile: string;
+  /**
+   * Bucket every session file is mirrored to after it is written locally, so
+   * casa can read it. `null` = disabled (default). Set `PPMA_SESSION_BUCKET`.
+   */
+  sessionBucket: SessionBucketConfig | null;
 
   /** Token threshold above which the session compacts. 0 = pi defaults. */
   compactionTokenThreshold: number;
@@ -226,6 +231,27 @@ export interface Config {
   githubToken: string;
 }
 
+/**
+ * An S3-compatible bucket for session files. Parsed from `PPMA_SESSION_BUCKET`
+ * (`t3://bucket/prefix/` or `s3://bucket/prefix/`) plus the standard AWS
+ * variables — the same ones casa reads, so one env file serves both.
+ */
+export interface SessionBucketConfig {
+  /** The URL as configured, for logging. */
+  url: string;
+  bucket: string;
+  /** Key prefix, empty or ending in `/`. Objects are `<prefix><sessionId>.json`. */
+  prefix: string;
+  /** Empty = the SDK default (AWS) for `s3://`. */
+  endpoint: string;
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+}
+
+/** Tigris' S3 endpoint, the default for `t3://` URLs (as in casa). */
+export const TIGRIS_ENDPOINT = "https://t3.storage.dev";
+
 /** Environment shape we read from — a subset of `process.env`. */
 export type Env = Record<string, string | undefined>;
 
@@ -328,6 +354,29 @@ function resolveMonitoredRepos(env: Env): string[] {
     .filter(Boolean);
 }
 
+function resolveSessionBucket(env: Env): SessionBucketConfig | null {
+  const url = env.PPMA_SESSION_BUCKET?.trim();
+  if (!url) return null;
+  const m = /^(s3|t3):\/\/([^/]+)\/?(.*)$/.exec(url);
+  if (!m) {
+    throw new ConfigError(
+      `PPMA_SESSION_BUCKET must be an s3:// or t3:// URL (e.g. t3://bucket/ppmagent/), got: ${url}`,
+    );
+  }
+  const [, scheme, bucket = "", rawPrefix = ""] = m;
+  const prefix = rawPrefix && !rawPrefix.endsWith("/") ? `${rawPrefix}/` : rawPrefix;
+  const tigris = scheme === "t3";
+  return {
+    url,
+    bucket,
+    prefix,
+    endpoint: env.AWS_ENDPOINT_URL_S3 || env.AWS_ENDPOINT_URL || (tigris ? TIGRIS_ENDPOINT : ""),
+    region: optional(env, "AWS_REGION", tigris ? "auto" : "us-east-1"),
+    accessKeyId: required(env, "AWS_ACCESS_KEY_ID"),
+    secretAccessKey: required(env, "AWS_SECRET_ACCESS_KEY"),
+  };
+}
+
 /**
  * Build a {@link Config} from a process environment. Throws {@link ConfigError}
  * if a required variable is missing or malformed.
@@ -360,6 +409,7 @@ export function loadConfig(env: Env = process.env): Config {
     telegramBotToken: required(env, "PPMA_TELEGRAM_BOT_TOKEN"),
     telegramAllowedChatId: resolveAllowedChatId(env),
     sessionFile: optional(env, "PPMA_SESSION_FILE", "./.session/session.json"),
+    sessionBucket: resolveSessionBucket(env),
 
     compactionTokenThreshold: int(env, "PPMA_COMPACTION_TOKEN_THRESHOLD", 0),
 

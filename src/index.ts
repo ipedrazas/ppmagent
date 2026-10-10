@@ -12,6 +12,7 @@ import { ProteosTaskWatcher } from "./proteos/watcher.ts";
 import { redactDeep } from "./redact.ts";
 import { ReminderRunner } from "./reminder/runner.ts";
 import { ReminderStore } from "./reminder/store.ts";
+import { SessionBucket } from "./session/bucket.ts";
 import { SessionRetentionRunner } from "./session/retention.ts";
 import { SessionIndex } from "./session/session-index.ts";
 import { SessionStore } from "./session/store.ts";
@@ -87,8 +88,22 @@ async function main(): Promise<void> {
     config.apiKey,
     config.githubWebhookSecret,
     config.githubToken,
-  ].filter(Boolean);
-  const store = new SessionStore(config.sessionFile, (v) => redactDeep(v, secrets));
+    config.sessionBucket?.secretAccessKey,
+  ].filter((s): s is string => Boolean(s));
+  // Optional bucket copy of every session file, for casa to read.
+  const sessionBucket = config.sessionBucket
+    ? SessionBucket.fromConfig(config.sessionBucket, logger)
+    : null;
+  if (config.sessionBucket) {
+    logger
+      .withMetadata({ url: config.sessionBucket.url, endpoint: config.sessionBucket.endpoint })
+      .info("mirroring session files to bucket");
+  }
+  const store = new SessionStore(
+    config.sessionFile,
+    (v) => redactDeep(v, secrets),
+    sessionBucket ?? undefined,
+  );
 
   // Build the session index from the store so search works on existing sessions.
   const sessionRoot = dirname(config.sessionFile);
@@ -245,6 +260,8 @@ async function main(): Promise<void> {
     retentionRunner.start(),
     reminderRunner.start(),
   ]);
+  // Let the last turn's session upload land before the process exits.
+  await sessionBucket?.flush();
   logger.info("ppmagent stopped");
 }
 
