@@ -259,3 +259,59 @@ describe("loadConfig", () => {
     expect(config.baseUrl).toBe("");
   });
 });
+
+describe("loadConfig — session bucket", () => {
+  const keys: Env = { AWS_ACCESS_KEY_ID: "tid_x", AWS_SECRET_ACCESS_KEY: "tsec_x" };
+
+  test("is disabled when PPMA_SESSION_BUCKET is unset", () => {
+    expect(loadConfig(base).sessionBucket).toBeNull();
+  });
+
+  test("t3:// defaults to the Tigris endpoint and region auto, and normalises the prefix", () => {
+    const b = loadConfig({
+      ...base,
+      ...keys,
+      PPMA_SESSION_BUCKET: "t3://sessions/ppmagent",
+    }).sessionBucket;
+    expect(b).toMatchObject({
+      bucket: "sessions",
+      prefix: "ppmagent/",
+      endpoint: "https://t3.storage.dev",
+      region: "auto",
+      accessKeyId: "tid_x",
+      secretAccessKey: "tsec_x",
+    });
+  });
+
+  test("a bucket root has an empty prefix", () => {
+    const b = loadConfig({ ...base, ...keys, PPMA_SESSION_BUCKET: "t3://sessions/" }).sessionBucket;
+    expect(b?.prefix).toBe("");
+  });
+
+  test("AWS_ENDPOINT_URL_S3 and AWS_REGION override the defaults", () => {
+    const b = loadConfig({
+      ...base,
+      ...keys,
+      PPMA_SESSION_BUCKET: "s3://sessions/a/b/",
+      AWS_ENDPOINT_URL_S3: "https://minio.example",
+      AWS_REGION: "eu-west-2",
+    }).sessionBucket;
+    expect(b).toMatchObject({
+      prefix: "a/b/",
+      endpoint: "https://minio.example",
+      region: "eu-west-2",
+    });
+  });
+
+  test("rejects a non-bucket URL", () => {
+    expect(() =>
+      loadConfig({ ...base, ...keys, PPMA_SESSION_BUCKET: "https://sessions/x" }),
+    ).toThrow(/PPMA_SESSION_BUCKET/);
+  });
+
+  test("requires credentials when enabled", () => {
+    expect(() => loadConfig({ ...base, PPMA_SESSION_BUCKET: "t3://sessions/" })).toThrow(
+      /AWS_ACCESS_KEY_ID/,
+    );
+  });
+});

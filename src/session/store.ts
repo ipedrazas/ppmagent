@@ -10,6 +10,7 @@ import {
 import { dirname, join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { uuidv7 } from "@earendil-works/pi-agent-core";
+import type { SessionMirror } from "./bucket.ts";
 
 /**
  * Durable per-chat session: the transcript plus the active project and an
@@ -83,10 +84,14 @@ export class SessionStore {
    * @param sanitize - Optional transform applied to the session state before
    *   writing to disk. Use to redact secrets from persisted data without
    *   altering the in-memory state.
+   * @param mirror - Optional remote copy (e.g. a bucket casa reads) that is
+   *   handed each session file as written, sanitized. Deletions are not
+   *   mirrored: the remote copy outlives local retention.
    */
   constructor(
     filePath: string,
     private readonly sanitize?: (v: unknown) => unknown,
+    private readonly mirror?: SessionMirror,
   ) {
     this.legacyFile = filePath;
     this.root = dirname(filePath);
@@ -163,9 +168,11 @@ export class SessionStore {
     const file = this.file(state.sessionId);
     const tmp = `${file}.tmp`;
     const toWrite = this.sanitize ? this.sanitize(state) : state;
-    writeFileSync(tmp, JSON.stringify(toWrite, null, 2));
+    const body = JSON.stringify(toWrite, null, 2);
+    writeFileSync(tmp, body);
     renameSync(tmp, file);
     this.setCurrent(state.sessionId);
+    this.mirror?.put(state.sessionId, body);
   }
 
   /** Load the last-seen Telegram update offset, or 0 if not yet persisted. */

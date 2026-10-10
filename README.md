@@ -165,6 +165,30 @@ Alternatively, from the **mobile or desktop Telegram app**:
 > and while no webhook is set. If it comes back empty, send the bot a fresh
 > message and retry.
 
+### Session files in a bucket (optional)
+
+Set `PPMA_SESSION_BUCKET` to copy every session file to an S3-compatible bucket
+(Tigris, S3, MinIO) so [casa](https://github.com/tavon-ai/casa) can analyse
+them: `casa analyze t3://bucket/ppmagent/`, or `casa server --bucket
+t3://bucket/`, whose Bucket tab groups files by their first folder.
+
+```sh
+PPMA_SESSION_BUCKET=t3://my-sessions/ppmagent/
+AWS_ACCESS_KEY_ID=tid_...
+AWS_SECRET_ACCESS_KEY=tsec_...
+```
+
+Objects are `<prefix><sessionId>.json`, the same redacted JSON written locally,
+which casa reads as a pi session. The local files stay the source of truth: an
+upload runs after each save, off the turn's path, and a failure is logged and
+never breaks the turn. Retention never touches the bucket: a session deleted
+locally after `PPMA_SESSION_RETENTION_DAYS` stays in the bucket, so casa can
+still analyse it (use a bucket lifecycle rule if you want it to expire). Credentials and endpoint come from the same variables casa reads:
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` and
+`AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL`. `t3://` defaults to Tigris
+(`https://t3.storage.dev`, region `auto`). The key needs write access to the
+prefix. Give casa a separate read-only key.
+
 ## Project layout
 
 ```
