@@ -11,10 +11,10 @@
  * evals/README.md). Opt in via `bun evals/run.ts --judge`.
  */
 
-import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
-import { Type } from "@earendil-works/pi-ai";
-import { defaultStreamFn, resolveModel } from "../src/agent.ts";
+import { type Models, Type } from "@earendil-works/pi-ai";
 import type { Config } from "../src/config.ts";
+import { buildModels, resolveModel } from "../src/runtime/models.ts";
+import { DurableRuntime } from "../src/runtime/runtime.ts";
 import { defineTool, toolResult } from "../src/tool-helpers.ts";
 import type { EvalOutcome } from "./harness.ts";
 
@@ -102,8 +102,8 @@ function judgePrompt(outcome: EvalOutcome, criterion: JudgeCriterion): string {
 export interface JudgeOverrides {
   /** Inject a model (e.g. a faux provider in tests) instead of resolving from config. */
   model?: ReturnType<typeof resolveModel>;
-  /** Inject the stream function (e.g. a faux provider) instead of the real provider. */
-  streamFn?: StreamFn;
+  /** Inject the `Models` collection (e.g. holding a faux provider) instead of the real providers. */
+  models?: Models;
 }
 
 /** Run one criterion's judge call over one outcome and parse its verdict. */
@@ -118,17 +118,22 @@ export async function judgeCriterion(
     verdict = { score, rationale };
   });
 
-  const agent = new Agent({
-    initialState: {
-      systemPrompt: JUDGE_SYSTEM_PROMPT,
-      model: overrides.model ?? resolveModel(config),
-      tools: [tool],
-    },
-    streamFn: overrides.streamFn ?? defaultStreamFn(config),
-    getApiKey: () => config.apiKey,
+  // A throwaway in-memory runtime: the judge call needs no durability, only the
+  // same model/tool plumbing the agent itself runs on.
+  const model = overrides.model ?? resolveModel(config);
+  const runtime = await DurableRuntime.open({
+    models: overrides.models ?? buildModels(config, model),
+    model,
+    systemPrompt: JUDGE_SYSTEM_PROMPT,
+    tools: [tool],
+    retry: { maxRetries: 0 },
   });
-
-  await agent.prompt(judgePrompt(outcome, criterion));
+  try {
+    const conversation = await runtime.createConversation();
+    await runtime.runTurn(conversation, judgePrompt(outcome, criterion));
+  } finally {
+    await runtime.close();
+  }
 
   if (!verdict) {
     return {

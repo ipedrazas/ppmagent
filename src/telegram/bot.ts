@@ -34,12 +34,13 @@ export interface TelegramBotDeps {
 /**
  * Single-tenant Telegram adapter: one user, one chat, one workspace.
  *
- * Each inbound message → `agent.prompt`; the reply is the agent's assistant text
- * or, on a clarify turn, the `ask_user` question. After every turn the
- * transcript is compacted if over threshold (durable facts already live in
- * `ppm`). The session (transcript + active project) is persisted so the agent
- * survives restarts; the active project is exposed to `transformContext` via
- * {@link getActiveProject}.
+ * Each inbound message → a turn on the session's durable conversation; the reply
+ * is the agent's assistant text or, on a clarify turn, the `ask_user` question.
+ * The durable runtime compacts the transcript when it nears the threshold
+ * (durable facts already live in `ppm`). The session metadata and transcript are
+ * persisted so the agent survives restarts — including mid-turn, which the next
+ * `start()` finishes; the active project is exposed to the request-context
+ * injection via {@link getActiveProject}.
  */
 export class TelegramBot {
   private running = false;
@@ -102,10 +103,23 @@ export class TelegramBot {
    * Handle one inbound message: dispatch it as a slash command, or — when it is
    * not a command — run it as an agent turn. Returns the replies (for tests).
    */
-  async handleMessage(chatId: number, text: string): Promise<string[]> {
+  async handleMessage(chatId: number, text: string, updateId?: number): Promise<string[]> {
     const handled = await this.router.route(chatId, text);
     if (handled !== null) return handled;
-    return this.turnRunner.run(chatId, text);
+    return this.turnRunner.run(chatId, text, updateId);
+  }
+
+  /**
+   * Finish any turn the previous process left half-done (crash, deploy, OOM
+   * kill) and deliver its reply, before taking new input. Never throws.
+   */
+  async recover(): Promise<void> {
+    try {
+      const recovered = await this.turnRunner.recoverPending(this.allowedChatId);
+      if (recovered > 0) this.log.withMetadata({ recovered }).info("recovered unfinished turns");
+    } catch (error) {
+      this.log.withError(error).error("recovering unfinished turns failed");
+    }
   }
 
   /** Long-poll Telegram and dispatch messages until {@link stop} is called. */
@@ -122,6 +136,7 @@ export class TelegramBot {
         activeProject: this.session.activeProject,
       })
       .info("bot started; long-polling for updates");
+    await this.recover();
     let offset = this.deps.store.loadOffset();
     let backoffMs = 0;
     while (this.running) {
@@ -146,7 +161,7 @@ export class TelegramBot {
       for (const update of updates) {
         offset = update.updateId + 1;
         this.deps.store.saveOffset(offset);
-        if (update.message) await this.dispatchMessage(update.message);
+        if (update.message) await this.dispatchMessage(update.message, update.updateId);
       }
     }
     // Drain any in-flight turn before the process exits.
@@ -159,7 +174,7 @@ export class TelegramBot {
    * waiting for it), otherwise launch the turn. A new control command is a new
    * branch here — not an edit to the poll loop in {@link start}.
    */
-  private async dispatchMessage(message: InboundMessage): Promise<void> {
+  private async dispatchMessage(message: InboundMessage, updateId?: number): Promise<void> {
     if (this.allowedChatId !== undefined && message.chatId !== this.allowedChatId) {
       this.log.withMetadata({ chatId: message.chatId }).debug("ignoring disallowed chat");
       return;
@@ -184,7 +199,7 @@ export class TelegramBot {
       await this.activeTurn;
       this.activeTurn = null;
     }
-    this.launchTurn(message.chatId, message.text);
+    this.launchTurn(message.chatId, message.text, updateId);
   }
 
   /**
@@ -195,7 +210,8 @@ export class TelegramBot {
   private async cancel(chatId: number): Promise<void> {
     const wasCancelled = this.activeTurn !== null;
     if (wasCancelled) {
-      this.built.agent.abort();
+      const conversationId = this.session.conversationId;
+      if (conversationId !== undefined) await this.built.runtime.abort(conversationId);
       await this.activeTurn;
       this.activeTurn = null;
     }
@@ -212,8 +228,8 @@ export class TelegramBot {
    * the user, never fatal to the loop. Tracks the turn as {@link activeTurn} and
    * clears it on completion if it is still the current one.
    */
-  private launchTurn(chatId: number, text: string): void {
-    const turn: Promise<void> = this.handleMessage(chatId, text).then(
+  private launchTurn(chatId: number, text: string, updateId?: number): void {
+    const turn: Promise<void> = this.handleMessage(chatId, text, updateId).then(
       () => {},
       (error) => {
         this.log.withError(error).withMetadata({ chatId }).error("turn dropped");

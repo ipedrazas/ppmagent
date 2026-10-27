@@ -6,7 +6,7 @@
   "type": "module",
   "module": "src/index.ts",
   "engines": {
-    "bun": ">=1.1.0"
+    "bun": ">=1.4.0"
   },
   "scripts": {
     "dev": "bun run --watch src/index.ts",
@@ -19,8 +19,9 @@
     "format": "biome format --write ."
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.82.1",
-    "@earendil-works/pi-ai": "0.82.1",
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
     "loglayer": "^9.3.0"
   },
   "devDependencies": {

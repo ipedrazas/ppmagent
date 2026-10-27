@@ -1,17 +1,11 @@
-import { Agent, type AgentOptions, type StreamFn } from "@earendil-works/pi-agent-core";
-import {
-  type AssistantMessage,
-  createProvider,
-  envApiKeyAuth,
-  type Model,
-  type TextContent,
+import type {
+  AssistantMessage,
+  Message,
+  Model,
+  Models,
+  ToolResultMessage,
 } from "@earendil-works/pi-ai";
-import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import {
-  builtinModels,
-  getBuiltinModel,
-  getBuiltinModels,
-} from "@earendil-works/pi-ai/providers/all";
+import type { AgentEvent, EntryRecord, Storage } from "@earendil-works/pi-durable";
 import type { Config } from "./config.ts";
 import { type Logger, nullLogger } from "./logger.ts";
 import { type MemoryContextHook, makeTransformContext } from "./memory/context.ts";
@@ -24,18 +18,20 @@ import { PulseClient } from "./pulse/pulse.ts";
 import { buildPulseTools } from "./pulse/tools.ts";
 import type { ReminderStore } from "./reminder/store.ts";
 import { buildReminderTools } from "./reminder/tools.ts";
+import { buildModels, resolveModel } from "./runtime/models.ts";
+import { type ConversationKey, DurableRuntime, messageText } from "./runtime/runtime.ts";
+import type { AppTool } from "./tool-helpers.ts";
 import { buildAskUserTool } from "./tools/ask-user.ts";
 import type { ConfirmationStore } from "./tools/confirmation.ts";
 import { clipPayload, type TraceRecorder } from "./trace/recorder.ts";
 import { DataboxClient } from "./tracker/databox.ts";
 import { buildTrackerTools } from "./tracker/tools.ts";
-
 /**
  * Tools that write state — tracker mutations, memory writes, git operations, and
  * task dispatch. These are logged at `info` level so there is a clear audit trail
  * of every state-changing action the agent takes. Read-only tools stay at `debug`.
  */
-const MUTATING_TOOLS = new Set<string>([
+export const MUTATING_TOOLS = new Set<string>([
   // tracker writes
   "tracker_create_task",
   "tracker_update_task",
@@ -68,6 +64,21 @@ const MUTATING_TOOLS = new Set<string>([
   "pulse_pull",
   "pulse_up",
   "pulse_down",
+]);
+
+/**
+ * Tools whose interrupted execution must never be re-run when the durable
+ * runtime recovers from a crash: everything that writes (see
+ * {@link MUTATING_TOOLS}) plus the writers that are not worth an audit line —
+ * reminders and `ask_user` (which records an open question in memory). A
+ * read-only tool is replayed; one of these is reported to the model as
+ * interrupted so it can check the outcome instead of repeating a side effect.
+ */
+export const NON_REPLAYABLE_TOOLS: ReadonlySet<string> = new Set([
+  ...MUTATING_TOOLS,
+  "reminder_create",
+  "reminder_cancel",
+  "ask_user",
 ]);
 
 export const SYSTEM_PROMPT = `You are a Project / Product-Owner agent. You turn vague requests into well-scoped tracker tasks and keep structured, human-readable memory.
@@ -108,172 +119,12 @@ Reminders (reminder_* tools):
 - The \`when\` field accepts natural language: "tomorrow", "in 2 hours", "at 3pm", "next Monday", "in 30 minutes", or an ISO 8601 datetime.
 - To show pending reminders call reminder_list; to cancel one call reminder_cancel with its id.`;
 
-/**
- * pi-ai has no built-in Ollama provider (it's a local, self-hosted server with
- * no fixed model catalog), so it can't be resolved via `getBuiltinModel`.
- * Build it the same way pi-ai's own OpenAI-compatible providers do — deepseek,
- * zai, and openrouter all wrap `openAICompletionsApi()` via `createProvider` —
- * pointed at the configured base URL instead of a hosted one.
- */
-function ollamaProvider(baseUrl: string) {
-  return createProvider({
-    id: "ollama",
-    name: "Ollama",
-    baseUrl,
-    auth: { apiKey: envApiKeyAuth("Ollama API key", ["OLLAMA_API_KEY"]) },
-    models: [],
-    api: openAICompletionsApi(),
-  });
-}
-
-/** Build the runtime Model descriptor for the configured Ollama model id. */
-function resolveOllamaModel(config: Config): Model<"openai-completions"> {
-  const provider = ollamaProvider(config.baseUrl);
-  return {
-    id: config.model,
-    name: config.model,
-    api: "openai-completions",
-    provider: provider.id,
-    baseUrl: provider.baseUrl ?? config.baseUrl,
-    reasoning: false,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128_000,
-    maxTokens: 8_192,
-  };
-}
-
-/** Catalog ids for a provider, ranked so the closest matches to `wanted` come first. */
-function suggestModelIds(provider: string, wanted: string): string[] {
-  const ids = getBuiltinModels(provider as "anthropic").map((m) => m.id);
-  // A mis-typed id is usually a real id plus/minus a suffix (a date stamp, a
-  // `-latest`), so rank by shared prefix length before falling back to
-  // alphabetical order.
-  const sharedPrefix = (id: string): number => {
-    let i = 0;
-    while (i < id.length && i < wanted.length && id[i] === wanted[i]) i++;
-    return i;
-  };
-  return ids.sort((a, b) => sharedPrefix(b) - sharedPrefix(a) || a.localeCompare(b)).slice(0, 10);
-}
-
-/**
- * Context/output assumptions for a model pi's catalog does not know. They only
- * feed compaction, so they are deliberately conservative — set
- * PPMA_COMPACTION_TOKEN_THRESHOLD explicitly when running an uncatalogued model.
- */
-const UNCATALOGUED_CONTEXT_WINDOW = 128_000;
-const UNCATALOGUED_MAX_TOKENS = 8_192;
-
-/**
- * Build a descriptor for a model id the catalog does not list, by borrowing the
- * endpoint and wire API from any catalogued model of the same provider. Returns
- * undefined when the provider is unknown or does not speak
- * `openai-completions` — those (e.g. anthropic) need provider-specific request
- * shaping we cannot safely synthesize.
- *
- * A provider's catalog snapshot ages faster than the pinned pi-ai release, so a
- * brand-new model id (e.g. a dated snapshot published after the pin) is a
- * legitimate config, not a typo. Costs are zeroed because they are genuinely
- * unknown — see the warning in {@link resolveModel}.
- */
-function uncataloguedModel(config: Config): Model<"openai-completions"> | undefined {
-  // The cast widens away the catalog's per-provider `api` literal so the runtime
-  // check below is expressible (config supplies the provider at runtime).
-  const [sample] = getBuiltinModels(config.provider as "anthropic") as Model<any>[];
-  const baseUrl = config.baseUrl || sample?.baseUrl;
-  if (!baseUrl || (sample && sample.api !== "openai-completions")) return undefined;
-  return {
-    id: config.model,
-    name: config.model,
-    api: "openai-completions",
-    provider: config.provider,
-    baseUrl,
-    reasoning: false,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: UNCATALOGUED_CONTEXT_WINDOW,
-    maxTokens: UNCATALOGUED_MAX_TOKENS,
-  };
-}
-
-/**
- * Resolve the configured provider + model to a runtime `Model`. Ollama is
- * handled specially (see {@link resolveOllamaModel}); every other provider
- * goes through `getBuiltinModel`, which is strongly typed over the built-in
- * catalog — the casts let config-supplied values flow through (it is a
- * runtime catalog lookup).
- *
- * A catalog miss must never return `undefined`: pi-agent-core silently
- * substitutes a placeholder model (`api: "unknown"`), every turn then fails
- * inside the agent loop with "No API provider registered for api: unknown", and
- * pi swallows that into an empty assistant message — a bot that answers
- * "(no reply)" to everything with nothing in the logs. So a miss either
- * synthesizes a descriptor for the provider's endpoint (loudly — the id may
- * simply be newer than the pinned catalog) or throws.
- */
-export function resolveModel(config: Config, logger: Logger = nullLogger): Model<any> {
-  if (config.provider === "ollama") {
-    return resolveOllamaModel(config);
-  }
-  const model = getBuiltinModel(
-    config.provider as "anthropic",
-    config.model as "claude-sonnet-4-6",
-  );
-  if (model) return model;
-
-  const synthesized = uncataloguedModel(config);
-  if (synthesized) {
-    logger
-      .withMetadata({
-        model: config.model,
-        provider: config.provider,
-        baseUrl: synthesized.baseUrl,
-        assumedContextWindow: synthesized.contextWindow,
-        closestCatalogIds: suggestModelIds(config.provider, config.model).slice(0, 3),
-      })
-      .warn(
-        `Model "${config.model}" is not in pi's catalog; calling ${config.provider} with it ` +
-          "anyway. Cost is reported as $0 (so PPMA_TURN_MAX_COST_USD / " +
-          "PPMA_SESSION_MAX_COST_USD stop enforcing) and the context window is an " +
-          "assumption. If the provider does not know the id either it will reject the " +
-          "call — that surfaces as a `model turn failed` log line, not a crash.",
-      );
-    return synthesized;
-  }
-
-  const suggestions = suggestModelIds(config.provider, config.model);
-  throw new Error(
-    `Unknown model "${config.model}" for provider "${config.provider}" — ` +
-      "it is not in pi's built-in catalog and cannot be called generically " +
-      "(this provider does not use the OpenAI-completions wire format). " +
-      "Set PPMA_MODEL to a known id" +
-      (suggestions.length > 0 ? `, e.g. one of: ${suggestions.join(", ")}` : "") +
-      ".",
-  );
-}
-
-/**
- * The stream function real (non-test) runs use.
- *
- * pi-agent-core made `streamFn` a required `Agent` option: omitting it no
- * longer falls back to a provider registry, it throws "No default stream
- * function configured" on the first turn. So the host owns that fallback now.
- * It mirrors {@link resolveModel}: the built-in providers cover every
- * catalogued and uncatalogued-but-catalogued-provider model, and Ollama gets
- * the same synthesized provider {@link resolveOllamaModel} builds its
- * descriptor from — otherwise `streamSimple` would reject its model with
- * "Unknown provider".
- */
-export function defaultStreamFn(config: Config): StreamFn {
-  const models = builtinModels();
-  if (config.provider === "ollama") models.setProvider(ollamaProvider(config.baseUrl));
-  return (model, context, options) => models.streamSimple(model, context, options);
-}
+export { resolveModel } from "./runtime/models.ts";
 
 export interface BuiltAgent {
-  agent: Agent;
-  /** The resolved model the agent runs on — also used by the compaction summarizer. */
+  /** The durable runtime: conversations, turns, recovery. */
+  runtime: DurableRuntime;
+  /** The resolved model the agent runs on. */
   model: Model<any>;
   ppm: PpmClient;
   databox: DataboxClient;
@@ -281,16 +132,23 @@ export interface BuiltAgent {
   pulse: PulseClient;
   /** Memory-injection seam; `sliceTokens()` returns the ephemeral slice size for token accounting. */
   memoryContext: MemoryContextHook;
+  /**
+   * Attach logging/tracing/metrics/compaction-checkpoint observers to a
+   * conversation. Idempotent; called for every conversation a session uses.
+   */
+  observe: (conversationId: ConversationKey) => void;
 }
 
 export interface BuildAgentOverrides {
-  /** Inject a model (e.g. a faux provider in tests) instead of resolving from config. */
+  /** Inject a model (e.g. a faux provider's) instead of resolving from config. */
   model?: Model<any>;
   /**
-   * Inject the stream function (e.g. a faux provider backed by a `Models`
-   * collection in tests). When omitted, {@link defaultStreamFn} is used.
+   * Inject the `Models` collection the harness resolves the model against (e.g.
+   * one holding a faux provider in tests). Defaults to the built-in providers.
    */
-  streamFn?: StreamFn;
+  models?: Models;
+  /** Supply durable storage directly — tests share one to simulate a restart. */
+  storage?: Storage;
   /** Root logger; child loggers are derived for the clients and tool tracing. */
   logger?: Logger;
   /** Session trace sink; tool start/end events are recorded when present. */
@@ -303,106 +161,47 @@ export interface BuildAgentOverrides {
   confirmationStore?: ConfirmationStore;
   /** When set, reminder_* tools are available for scheduling personal reminders. */
   reminderStore?: ReminderStore;
+  /** Replace the whole tool set (test seam: scripted tools instead of ppm/tracker/ProteOS). */
+  tools?: AppTool[];
+  /** Open the store without resuming unfinished work (tests inspect a crash's aftermath first). */
+  resume?: boolean;
+  /** Tokens of recent context a compaction keeps verbatim (tests shrink it). */
+  keepRecentTokens?: number;
+  /** Provider-call retry tuning (tests set `maxRetries: 0`). */
+  retry?: { maxRetries?: number; baseDelayMs?: number };
 }
 
-/** Concatenate the text blocks of an assistant message's content. */
-function assistantText(content: AssistantMessage["content"]): string {
-  return content
-    .filter((c): c is TextContent => c.type === "text")
-    .map((c) => c.text)
-    .join("");
-}
-
-/** Byte length of a value once serialized, or 0 if it cannot be serialized. */
-function jsonSize(value: unknown): number {
-  try {
-    return JSON.stringify(value)?.length ?? 0;
-  } catch {
-    return 0;
-  }
+/** Text of a durable entry's first model message (summaries, tool results). */
+function entryText(entry: EntryRecord): string {
+  return messageText(entry.model?.[0]);
 }
 
 /**
- * Shape-agnostic summary of a provider request body: enough to see *that* a
- * request went out and roughly what was in it, without dumping the whole
- * transcript into the log on every turn. The full body is logged separately at
- * `trace`.
+ * Subscribe to a conversation's committed events: one log line when a tool
+ * starts and one when it ends. Mutating tools (writes, git ops, task dispatch)
+ * are logged at `info` for an audit trail; read-only tools stay at `debug`.
+ * Errors are always `warn`. Trace events are also recorded when a recorder is
+ * present — tool args and results (both clipped), and each assistant message's
+ * text and provider-reported usage — so a trace carries enough to replay or
+ * grade a session. When a compaction summary lands it is flushed to the active
+ * project's memory as a durable checkpoint.
  */
-function payloadSummary(payload: unknown): Record<string, unknown> {
-  const body = payload as
-    | { model?: unknown; messages?: unknown; tools?: unknown; stream?: unknown }
-    | null
-    | undefined;
-  return {
-    payloadModel: typeof body?.model === "string" ? body.model : undefined,
-    messages: Array.isArray(body?.messages) ? body.messages.length : undefined,
-    tools: Array.isArray(body?.tools) ? body.tools.length : undefined,
-    stream: typeof body?.stream === "boolean" ? body.stream : undefined,
-    bytes: jsonSize(payload),
-  };
-}
-
-/**
- * Log every provider request and response. `debug` gives the one-line "we sent
- * N messages to model X / the endpoint answered HTTP 200" pair that answers
- * "is the message going out, is anything coming back"; `trace` adds the full
- * request body and response headers for when the summary is not enough. A
- * non-2xx status is logged at `warn` — pi retries some of those internally, so
- * without this they are invisible even when the turn eventually fails.
- */
-function llmHooks(logger: Logger): Pick<AgentOptions, "onPayload" | "onResponse"> {
-  const log = logger.child().withContext({ component: "llm" });
-  return {
-    onPayload: (payload, model) => {
-      const line = log.withMetadata({
-        model: model.id,
-        provider: model.provider,
-        api: model.api,
-        baseUrl: model.baseUrl,
-        ...payloadSummary(payload),
-      });
-      line.debug("llm request");
-      log
-        .withMetadata({ model: model.id, payload: clipPayload(payload) })
-        .trace("llm request body");
-      // Returning undefined leaves the payload untouched — this hook only observes.
-      return undefined;
-    },
-    onResponse: (response, model) => {
-      const line = log.withMetadata({
-        model: model.id,
-        provider: model.provider,
-        status: response.status,
-      });
-      if (response.status >= 400) line.warn("llm response (error status)");
-      else line.debug("llm response");
-      log
-        .withMetadata({ model: model.id, status: response.status, headers: response.headers })
-        .trace("llm response headers");
-    },
-  };
-}
-
-/**
- * Subscribe to the agent's tool-execution and turn-completion events: one log
- * line when a tool starts and one when it ends. Mutating tools (writes, git
- * ops, task dispatch) are logged at `info` for an audit trail; read-only tools
- * stay at `debug`. Errors are always `warn`. Trace events are also recorded
- * when a recorder is present — tool args and results (both clipped), and each
- * assistant turn's text and provider-reported usage — so a trace carries
- * enough to replay or grade a session, not just re-derive it from the live
- * transcript. Returns the unsubscribe handle (left attached for the process
- * lifetime).
- */
-function traceTools(
-  agent: Agent,
-  logger: Logger,
-  recorder?: TraceRecorder,
-  metrics?: MetricsCollector,
+function traceConversation(
+  runtime: DurableRuntime,
+  conversationId: ConversationKey,
+  deps: {
+    logger: Logger;
+    recorder?: TraceRecorder;
+    metrics?: MetricsCollector;
+    ppm: PpmClient;
+    getActiveProject: () => string | undefined;
+  },
 ): () => void {
-  const log = logger.child().withContext({ component: "agent" });
-  return agent.subscribe((event) => {
+  const { recorder, metrics } = deps;
+  const log = deps.logger.child().withContext({ component: "agent" });
+  return runtime.subscribe(conversationId, (event: AgentEvent) => {
     if (event.type === "tool_execution_start") {
+      if (event.parentToolCallId) return;
       const isMutating = MUTATING_TOOLS.has(event.toolName);
       const meta = log.withMetadata({
         tool: event.toolName,
@@ -418,73 +217,112 @@ function traceTools(
         args: clipPayload(event.args),
       });
     } else if (event.type === "tool_execution_end") {
+      if (event.parentToolCallId) return;
+      const result = event.entry?.model?.[0] as ToolResultMessage | undefined;
+      // A call whose entry is absent faulted or was orphaned: report it as an error.
+      const isError = result?.isError ?? true;
       const isMutating = MUTATING_TOOLS.has(event.toolName);
       const line = log.withMetadata({
         tool: event.toolName,
         toolCallId: event.toolCallId,
-        isError: event.isError,
+        isError,
       });
-      if (event.isError) line.warn("tool end (error)");
+      if (isError) line.warn("tool end (error)");
       else if (isMutating) line.info("tool end");
       else line.debug("tool end");
       recorder?.record({
         type: "tool_end",
         tool: event.toolName,
         toolCallId: event.toolCallId,
-        isError: event.isError,
-        result: clipPayload(event.result),
+        isError,
+        result: clipPayload(result?.content ?? null),
       });
-      metrics?.recordToolCall(event.toolName, event.isError);
-    } else if (event.type === "turn_end") {
-      const { message } = event;
-      if (!("role" in message) || message.role !== "assistant") return;
-      metrics?.recordUsage(message.usage);
-      const text = assistantText(message.content);
-      // pi-agent-core never throws out of `prompt()`: a failed run is turned
-      // into an assistant message with empty text, stopReason "error", and the
-      // real cause in `errorMessage`. Logging it here is the only place that
-      // cause is visible — otherwise the turn just produces no reply.
-      if (message.errorMessage) {
-        log
-          .withMetadata({
-            model: message.model,
-            provider: message.provider,
-            stopReason: message.stopReason,
-            error: message.errorMessage,
-          })
-          .error("model turn failed");
-      } else {
-        log
-          .withMetadata({
-            model: message.model,
-            stopReason: message.stopReason,
-            chars: text.length,
-            totalTokens: message.usage.totalTokens,
-          })
-          .debug("model turn");
+      metrics?.recordToolCall(event.toolName, isError);
+    } else if (event.type === "message_end") {
+      const message = event.entry.model?.[0];
+      if (event.entry.kind === "pi.assistant" && message?.role === "assistant") {
+        recordAssistant(log, recorder, metrics, message);
+      } else if (event.entry.kind === "pi.compaction") {
+        const project = deps.getActiveProject();
+        const summary = entryText(event.entry);
+        log.withMetadata({ project, chars: summary.length }).info("transcript compacted");
+        recorder?.record({ type: "compaction", summaryChars: summary.length });
+        if (project && summary) {
+          void deps.ppm
+            .write([
+              "conversation",
+              "add",
+              project,
+              "--content",
+              `Compaction checkpoint.\n\n${summary}`,
+            ])
+            .catch((error) => {
+              log.withError(error).warn("failed to flush compaction summary to memory");
+            });
+        }
       }
-      recorder?.record({
-        type: "assistant_message",
-        text: clipPayload(text),
-        stopReason: message.stopReason,
-        ...(message.errorMessage ? { error: message.errorMessage } : {}),
-        totalTokens: message.usage.totalTokens,
-        costUsd: message.usage.cost.total,
-      });
+    } else if (event.type === "task_failed") {
+      log.withMetadata({ kind: event.kind, error: event.message }).error("durable task failed");
+    } else if (event.type === "auto_retry_start") {
+      log
+        .withMetadata({ attempt: event.attempt, error: event.errorMessage })
+        .warn("model call failed; retrying");
     }
+  });
+}
+
+function recordAssistant(
+  log: Logger,
+  recorder: TraceRecorder | undefined,
+  metrics: MetricsCollector | undefined,
+  message: AssistantMessage,
+): void {
+  metrics?.recordUsage(message.usage);
+  const text = messageText(message);
+  // A failed provider call is committed as an assistant message with empty
+  // text, stopReason "error", and the real cause in `errorMessage`. Logging it
+  // here is the only place that cause is visible besides the turn outcome.
+  if (message.errorMessage) {
+    log
+      .withMetadata({
+        model: message.model,
+        provider: message.provider,
+        stopReason: message.stopReason,
+        error: message.errorMessage,
+      })
+      .error("model turn failed");
+  } else {
+    log
+      .withMetadata({
+        model: message.model,
+        stopReason: message.stopReason,
+        chars: text.length,
+        totalTokens: message.usage.totalTokens,
+      })
+      .debug("model turn");
+  }
+  recorder?.record({
+    type: "assistant_message",
+    text: clipPayload(text),
+    stopReason: message.stopReason,
+    ...(message.errorMessage ? { error: message.errorMessage } : {}),
+    totalTokens: message.usage.totalTokens,
+    costUsd: message.usage.cost.total,
   });
 }
 
 /**
  * Wire the agent: memory + tracker + ask_user tools, the `ppm context`
- * injection seam, and the configured provider's model. `getActiveProject` is supplied by
- * the caller (the Telegram adapter tracks it per chat).
+ * injection seam, and the configured provider's model, all hosted on a durable
+ * runtime. `getActiveProject` is supplied by the caller (the Telegram adapter
+ * tracks it per chat). Async because opening the durable store resumes any turn
+ * the previous process left unfinished.
  */
-export function buildAgent(
+export async function buildAgent(
   config: Config,
   getActiveProject: () => string | undefined,
   overrides: BuildAgentOverrides = {},
-): BuiltAgent {
+): Promise<BuiltAgent> {
   const logger = overrides.logger ?? nullLogger;
   const maxOutputBytes = config.execMaxOutputBytes;
   const ppm = new PpmClient({
@@ -513,7 +351,7 @@ export function buildAgent(
     maxOutputBytes,
   });
 
-  const tools = [
+  const tools = overrides.tools ?? [
     ...buildMemoryTools(ppm),
     ...buildTrackerTools(databox, {
       confirmationStore: overrides.confirmationStore,
@@ -535,6 +373,7 @@ export function buildAgent(
     getActiveProject,
     logger,
   });
+  const llmLog = logger.child().withContext({ component: "llm" });
   logger
     .child()
     .withContext({ component: "agent" })
@@ -546,22 +385,47 @@ export function buildAgent(
       contextWindow: model.contextWindow,
       maxTokens: model.maxTokens,
       tools: tools.length,
+      durableDb: overrides.storage ? "(injected)" : config.durableDbFile,
     })
     .info("agent model resolved");
 
-  const agent = new Agent({
-    initialState: {
-      systemPrompt: SYSTEM_PROMPT,
-      model,
-      tools,
+  const runtime = await DurableRuntime.open({
+    dbFile: overrides.storage ? undefined : config.durableDbFile,
+    storage: overrides.storage,
+    models: overrides.models ?? buildModels(config, model),
+    model,
+    systemPrompt: SYSTEM_PROMPT,
+    tools,
+    mutatingTools: NON_REPLAYABLE_TOOLS,
+    transformRequest: async (messages: readonly Message[], signal?: AbortSignal) => {
+      // Logged per attempt, including recovery attempts after a restart.
+      llmLog
+        .withMetadata({ model: model.id, provider: model.provider, messages: messages.length })
+        .debug("llm request");
+      llmLog
+        .withMetadata({ model: model.id, payload: clipPayload(messages) })
+        .trace("llm request body");
+      return memoryContext.hook(messages, signal);
     },
-    transformContext: memoryContext.hook,
-    streamFn: overrides.streamFn ?? defaultStreamFn(config),
-    getApiKey: () => config.apiKey,
-    ...llmHooks(logger),
+    compactionThreshold: config.compactionTokenThreshold,
+    keepRecentTokens: overrides.keepRecentTokens,
+    resume: overrides.resume,
+    retry: overrides.retry,
+    logger,
   });
 
-  traceTools(agent, logger, overrides.recorder, overrides.metrics);
+  const observed = new Set<ConversationKey>();
+  const observe = (conversationId: ConversationKey): void => {
+    if (observed.has(conversationId)) return;
+    observed.add(conversationId);
+    traceConversation(runtime, conversationId, {
+      logger,
+      recorder: overrides.recorder,
+      metrics: overrides.metrics,
+      ppm,
+      getActiveProject,
+    });
+  };
 
-  return { agent, model, ppm, databox, proteos, pulse, memoryContext };
+  return { runtime, model, ppm, databox, proteos, pulse, memoryContext, observe };
 }

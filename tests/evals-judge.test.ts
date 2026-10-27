@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { FauxProviderHandle } from "@earendil-works/pi-ai";
 import {
   createModels,
@@ -10,6 +9,7 @@ import {
 import type { EvalOutcome } from "../evals/harness.ts";
 import { JUDGE_CRITERIA, judgeCriterion, judgeOutcome, judgeOutcomes } from "../evals/judge.ts";
 import { makeTestConfig } from "./support/config.ts";
+import { fauxToolTurn } from "./support/faux-agent.ts";
 
 function makeOutcome(overrides: Partial<EvalOutcome> = {}): EvalOutcome {
   return {
@@ -39,9 +39,7 @@ function fauxSetup() {
   const faux: FauxProviderHandle = fauxProvider({ provider: "faux", models: [{ id: "faux-1" }] });
   const models = createModels();
   models.setProvider(faux.provider);
-  const streamFn: StreamFn = (model, context, options) =>
-    models.streamSimple(model, context, options);
-  return { faux, streamFn };
+  return { faux, models };
 }
 
 describe("JUDGE_CRITERIA.appliesTo", () => {
@@ -60,21 +58,21 @@ describe("JUDGE_CRITERIA.appliesTo", () => {
 
 describe("judgeCriterion", () => {
   test("parses the submit_score tool call into a CriterionScore", async () => {
-    const { faux, streamFn } = fauxSetup();
+    const { faux, models } = fauxSetup();
     faux.setResponses([
-      fauxAssistantMessage([
+      fauxToolTurn(
         fauxToolCall("submit_score", {
           score: 4,
           rationale: "Targets the missing metric directly.",
         }),
-      ]),
+      ),
     ]);
     const criterion = JUDGE_CRITERIA[0];
     if (!criterion) throw new Error("expected at least one judge criterion");
 
     const score = await judgeCriterion(makeOutcome(), criterion, makeTestConfig(), {
       model: faux.getModel(),
-      streamFn,
+      models,
     });
 
     expect(score.criterionId).toBe(criterion.id);
@@ -83,14 +81,14 @@ describe("judgeCriterion", () => {
   });
 
   test("falls back to a low score when the judge model never calls submit_score", async () => {
-    const { faux, streamFn } = fauxSetup();
+    const { faux, models } = fauxSetup();
     faux.setResponses([fauxAssistantMessage("this looks fine to me")]);
     const criterion = JUDGE_CRITERIA[0];
     if (!criterion) throw new Error("expected at least one judge criterion");
 
     const score = await judgeCriterion(makeOutcome(), criterion, makeTestConfig(), {
       model: faux.getModel(),
-      streamFn,
+      models,
     });
 
     expect(score.score).toBe(1);
@@ -100,14 +98,14 @@ describe("judgeCriterion", () => {
 
 describe("judgeOutcome", () => {
   test("grades every applicable criterion and skips the rest", async () => {
-    const { faux, streamFn } = fauxSetup();
+    const { faux, models } = fauxSetup();
     faux.setResponses([
-      fauxAssistantMessage([fauxToolCall("submit_score", { score: 5, rationale: "Great." })]),
+      fauxToolTurn(fauxToolCall("submit_score", { score: 5, rationale: "Great." })),
     ]);
 
     const result = await judgeOutcome(makeOutcome({ toolCalls: ["ask_user"] }), makeTestConfig(), {
       model: faux.getModel(),
-      streamFn,
+      models,
     });
 
     expect(result.outcomeId).toBe("case-1");
@@ -118,10 +116,8 @@ describe("judgeOutcome", () => {
 
 describe("judgeOutcomes", () => {
   test("skips outcomes with no applicable criteria (e.g. ORIENT cases)", async () => {
-    const { faux, streamFn } = fauxSetup();
-    faux.setResponses([
-      fauxAssistantMessage([fauxToolCall("submit_score", { score: 3, rationale: "OK." })]),
-    ]);
+    const { faux, models } = fauxSetup();
+    faux.setResponses([fauxToolTurn(fauxToolCall("submit_score", { score: 3, rationale: "OK." }))]);
 
     const outcomes = [
       makeOutcome({ id: "clarify-case", toolCalls: ["ask_user"] }),
@@ -130,7 +126,7 @@ describe("judgeOutcomes", () => {
 
     const results = await judgeOutcomes(outcomes, makeTestConfig(), {
       model: faux.getModel(),
-      streamFn,
+      models,
     });
 
     expect(results.length).toBe(1);

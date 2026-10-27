@@ -29,13 +29,13 @@ RUN cargo install --git https://github.com/ipedrazas/dbxcli --tag "${DBXCLI_VERS
 # → /out/bin/dbxcli
 
 # ── Stage 4: install JS dependencies (cached on lockfile) ────────────────────
-FROM oven/bun:1.3.14 AS deps
+FROM oven/bun:1.4.3 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 # ── Stage 5: runtime ─────────────────────────────────────────────────────────
-FROM oven/bun:1.3.14-slim AS runtime
+FROM oven/bun:1.4.3-slim AS runtime
 LABEL org.opencontainers.image.source="https://github.com/ipedrazas/ppmagent"
 LABEL org.opencontainers.image.description="PM / Product-Owner agent (pi runtime) with ppm-backed memory"
 LABEL org.opencontainers.image.licenses="MIT"

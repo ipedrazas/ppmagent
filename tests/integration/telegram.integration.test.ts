@@ -1,17 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { FauxProviderHandle } from "@earendil-works/pi-ai";
-import {
-  createModels,
-  fauxAssistantMessage,
-  fauxProvider,
-  fauxText,
-  fauxToolCall,
-} from "@earendil-works/pi-ai";
-import { buildAgent } from "../../src/agent.ts";
-import { DEFAULT_KEEP_RECENT } from "../../src/compaction.ts";
+import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import type { Config } from "../../src/config.ts";
 import { PpmClient } from "../../src/memory/ppm.ts";
 import { SessionStore } from "../../src/session/store.ts";
@@ -19,6 +10,7 @@ import { TelegramBot } from "../../src/telegram/bot.ts";
 import { ChatSession } from "../../src/telegram/chat-session.ts";
 import type { TelegramClient } from "../../src/telegram/client.ts";
 import { makeTestConfig } from "../support/config.ts";
+import { type FauxAgent, fauxToolTurn, makeFauxAgent } from "../support/faux-agent.ts";
 
 // Step 5: Telegram run loop + durable session, driven by the faux model and a
 // fake Telegram client (records sent messages). Needs real `ppm`.
@@ -31,6 +23,7 @@ function testConfig(root: string): Config {
     ppmBin: ppmBin ?? "ppm",
     ppmMemoryRoot: root,
     sessionFile: join(root, "session.json"),
+    durableDbFile: join(root, "durable.sqlite"),
   });
 }
 
@@ -58,9 +51,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
   let root: string;
   let ppm: PpmClient;
   let faux: FauxProviderHandle;
-  let models: ReturnType<typeof createModels>;
-  const fauxStream: StreamFn = (model, context, options) =>
-    models.streamSimple(model, context, options);
+  const agents: FauxAgent[] = [];
 
   beforeEach(async () => {
     root = mkdtempSync(join(import.meta.dir, ".tgroot-"));
@@ -68,30 +59,40 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
     await ppm.run(["init"]);
     await ppm.projectCreate(PROJECT, "Onboarding drop-off");
     faux = fauxProvider({ provider: "faux", models: [{ id: "faux-1" }] });
-    models = createModels();
-    models.setProvider(faux.provider);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(agents.splice(0).map((a) => a.close()));
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
-  function makeBot(store: SessionStore) {
+  /**
+   * A bot over a real durable runtime. `durable: true` persists the store to a
+   * SQLite file under the test root (instead of memory) so a second bot can
+   * reopen it — the simulated restart.
+   */
+  async function makeBot(
+    store: SessionStore,
+    opts: { durable?: boolean; keepRecentTokens?: number } = {},
+  ) {
     const config = testConfig(root);
     const session = new ChatSession(config, { store });
-    const built = buildAgent(config, () => session.activeProject, {
-      model: faux.getModel(),
-      streamFn: fauxStream,
+    const agent = await makeFauxAgent(config, {
+      faux,
+      project: () => session.activeProject,
+      keepRecentTokens: opts.keepRecentTokens,
+      ...(opts.durable ? { storage: undefined } : {}),
     });
-    session.attach(built);
+    agents.push(agent);
+    session.attach(agent.built);
     const { client, sent, chatActions } = fakeClient();
-    const bot = new TelegramBot(config, built, session, { client, store });
-    return { bot, sent, chatActions };
+    const bot = new TelegramBot(config, agent.built, session, { client, store });
+    return { bot, sent, chatActions, agent };
   }
 
   test("/project sets the active project for memory injection", async () => {
     const store = new SessionStore(join(root, "session.json"));
-    const { bot, sent } = makeBot(store);
+    const { bot, sent } = await makeBot(store);
     const replies = await bot.handleMessage(CHAT, "/project onboarding");
     expect(replies[0]).toContain("onboarding");
     expect(bot.getActiveProject()).toBe(PROJECT);
@@ -100,7 +101,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
 
   test("/context reports token usage against the threshold", async () => {
     const store = new SessionStore(join(root, "session.json"));
-    const { bot, sent } = makeBot(store);
+    const { bot, sent } = await makeBot(store);
     const replies = await bot.handleMessage(CHAT, "/context");
     expect(replies[0]).toMatch(/Context: ~[\d,]+ tokens across \d+ messages/);
     expect(replies[0]).toContain("compaction at");
@@ -110,7 +111,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
   test("/compact on a short transcript reports nothing to compact", async () => {
     faux.setResponses([fauxAssistantMessage("Noted.")]);
     const store = new SessionStore(join(root, "session.json"));
-    const { bot } = makeBot(store);
+    const { bot } = await makeBot(store);
     await bot.handleMessage(CHAT, "/project onboarding");
     await bot.handleMessage(CHAT, "a single short turn");
     const replies = await bot.handleMessage(CHAT, "/compact");
@@ -119,7 +120,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
 
   test("/compact summarizes a long transcript and shrinks it", async () => {
     const store = new SessionStore(join(root, "session.json"));
-    const { bot } = makeBot(store);
+    const { bot } = await makeBot(store, { keepRecentTokens: 1 });
     await bot.handleMessage(CHAT, "/project onboarding");
     // Build a transcript longer than the keep-recent tail so compaction bites.
     for (let i = 0; i < 6; i++) {
@@ -127,8 +128,10 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
       await bot.handleMessage(CHAT, `message number ${i} with enough text to matter`);
     }
     const before = store.load()?.messages.length ?? 0;
-    expect(before).toBeGreaterThan(DEFAULT_KEEP_RECENT);
+    expect(before).toBeGreaterThan(4);
 
+    // The summary is itself a model call; script it.
+    faux.setResponses([fauxAssistantMessage("SUMMARY: six acknowledged turns.")]);
     const replies = await bot.handleMessage(CHAT, "/compact");
     expect(replies[0]).toContain("Compacted:");
     const after = store.load()?.messages.length ?? 0;
@@ -138,7 +141,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
   test("/new clears the transcript but keeps the active project and memory", async () => {
     faux.setResponses([fauxAssistantMessage("Noted.")]);
     const store = new SessionStore(join(root, "session.json"));
-    const { bot } = makeBot(store);
+    const { bot } = await makeBot(store);
     await bot.handleMessage(CHAT, "/project onboarding");
     await bot.handleMessage(CHAT, "some earlier context");
     expect(store.load()?.messages.length ?? 0).toBeGreaterThan(0);
@@ -154,7 +157,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
 
   test("/name labels the current session and /session reports it", async () => {
     const store = new SessionStore(join(root, "session.json"));
-    const { bot } = makeBot(store);
+    const { bot } = await makeBot(store);
     await bot.handleMessage(CHAT, "/project onboarding");
     await bot.handleMessage(CHAT, "/name metrics-review");
     const replies = await bot.handleMessage(CHAT, "/session");
@@ -165,7 +168,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
 
   test("/tools reports each CLI's version (or that it is unavailable)", async () => {
     const store = new SessionStore(join(root, "session.json"));
-    const { bot, sent } = makeBot(store);
+    const { bot, sent } = await makeBot(store);
     const replies = await bot.handleMessage(CHAT, "/tools");
     expect(replies[0]).toContain("ppmagent tools:");
     // ppm is required for this suite, so its real version line is present and
@@ -178,7 +181,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
   test("/resume lists sessions and switches back to a named one", async () => {
     faux.setResponses([fauxAssistantMessage("Noted.")]);
     const store = new SessionStore(join(root, "session.json"));
-    const { bot } = makeBot(store);
+    const { bot } = await makeBot(store);
     await bot.handleMessage(CHAT, "/name first");
     await bot.handleMessage(CHAT, "remember this");
     const firstId = store.find("first")?.sessionId;
@@ -197,15 +200,15 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
 
   test("a vague message produces a clarifying question and records it", async () => {
     faux.setResponses([
-      fauxAssistantMessage([
+      fauxToolTurn(
         fauxToolCall("ask_user", {
           question: "What metric defines onboarding success?",
           project: PROJECT,
         }),
-      ]),
+      ),
     ]);
     const store = new SessionStore(join(root, "session.json"));
-    const { bot, sent } = makeBot(store);
+    const { bot, sent } = await makeBot(store);
     await bot.handleMessage(CHAT, "/project onboarding");
     const replies = await bot.handleMessage(CHAT, "we should improve onboarding");
 
@@ -220,7 +223,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
 
   test("a clarifying question keeps the leading context text before the question (TAV-136)", async () => {
     faux.setResponses([
-      fauxAssistantMessage([
+      fauxToolTurn(
         fauxText(
           "This is a new tab like the existing Analyse, Diff, Extract, Tools tabs. Let me clarify the scope a bit.",
         ),
@@ -228,10 +231,10 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
           question: "For the Visualizer tab — what should the tree represent?",
           project: PROJECT,
         }),
-      ]),
+      ),
     ]);
     const store = new SessionStore(join(root, "session.json"));
-    const { bot } = makeBot(store);
+    const { bot } = await makeBot(store);
     await bot.handleMessage(CHAT, "/project onboarding");
     const replies = await bot.handleMessage(CHAT, "add a visualizer tab");
 
@@ -245,29 +248,29 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
 
   test("multiple clarifying questions across turns each keep context before the question (TAV-136)", async () => {
     const store = new SessionStore(join(root, "session.json"));
-    const { bot } = makeBot(store);
+    const { bot } = await makeBot(store);
     await bot.handleMessage(CHAT, "/project onboarding");
 
     faux.setResponses([
-      fauxAssistantMessage([
+      fauxToolTurn(
         fauxText("Let me clarify the scope a bit."),
         fauxToolCall("ask_user", {
           question: "What should the tree represent?",
           project: PROJECT,
         }),
-      ]),
+      ),
     ]);
     const first = await bot.handleMessage(CHAT, "add a visualizer tab");
     expect(first).toEqual(["Let me clarify the scope a bit.", "What should the tree represent?"]);
 
     faux.setResponses([
-      fauxAssistantMessage([
+      fauxToolTurn(
         fauxText("One more thing before I start."),
         fauxToolCall("ask_user", {
           question: "Should it support drag-and-drop reordering?",
           project: PROJECT,
         }),
-      ]),
+      ),
     ]);
     const second = await bot.handleMessage(CHAT, "it should show the dependency graph");
     expect(second).toEqual([
@@ -278,7 +281,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
 
   test("/help lists all slash commands", async () => {
     const store = new SessionStore(join(root, "session.json"));
-    const { bot, sent } = makeBot(store);
+    const { bot, sent } = await makeBot(store);
     const replies = await bot.handleMessage(CHAT, "/help");
     expect(replies[0]).toContain("/project");
     expect(replies[0]).toContain("/cancel");
@@ -288,7 +291,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
 
   test("/cancel with no active turn reports nothing to cancel", async () => {
     const store = new SessionStore(join(root, "session.json"));
-    const { bot, sent } = makeBot(store);
+    const { bot, sent } = await makeBot(store);
     const replies = await bot.handleMessage(CHAT, "/cancel");
     expect(replies[0]).toContain("No active turn to cancel");
     expect(sent.at(-1)?.text).toContain("No active turn to cancel");
@@ -297,7 +300,7 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
   test("agent turns send a typing indicator while processing", async () => {
     faux.setResponses([fauxAssistantMessage("Done.")]);
     const store = new SessionStore(join(root, "session.json"));
-    const { bot, chatActions } = makeBot(store);
+    const { bot, chatActions } = await makeBot(store);
     await bot.handleMessage(CHAT, "do something");
     expect(chatActions.some((a) => a.action === "typing")).toBe(true);
   });
@@ -305,13 +308,14 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
   test("a fresh bot restores the active project + transcript from disk", async () => {
     faux.setResponses([fauxAssistantMessage("Noted.")]);
     const store = new SessionStore(join(root, "session.json"));
-    const first = makeBot(store);
+    const first = await makeBot(store, { durable: true });
     await first.bot.handleMessage(CHAT, "/project onboarding");
     await first.bot.handleMessage(CHAT, "remember this thread");
 
-    // New bot instance, same store file → continuity across a "restart".
+    // New bot instance, same session + durable store files → continuity across a "restart".
+    await first.agent.close();
     const store2 = new SessionStore(join(root, "session.json"));
-    const second = makeBot(store2);
+    const second = await makeBot(store2, { durable: true });
     expect(second.bot.getActiveProject()).toBe(PROJECT);
 
     faux.setResponses([fauxAssistantMessage("Still here.")]);

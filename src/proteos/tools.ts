@@ -1,5 +1,5 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
+import type { AppTool } from "../tool-helpers.ts";
 import { defineTool, toolResult } from "../tool-helpers.ts";
 import { CONFIRM_SUFFIX, type ConfirmationStore } from "../tools/confirmation.ts";
 import { sanitizeLine, sanitizePrompt, sanitizeString } from "../tools/sanitize.ts";
@@ -48,7 +48,7 @@ function tasksKey(machine: string): string {
  * machine back off (1s, 10s, 30s, 90s, 5m) and a caller that keeps hammering has
  * its turn terminated. The prompt asks for fire-and-forget; this enforces it.
  */
-export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOptions): AgentTool[] {
+export function buildProteosTools(proteos: ProteosClient, opts?: ProteosToolsOptions): AppTool[] {
   const pollGate = opts?.pollGate ?? new PollGate();
 
   /**

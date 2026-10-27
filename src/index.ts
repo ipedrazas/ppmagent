@@ -1,10 +1,9 @@
 import { dirname, join } from "node:path";
 import { buildAgent } from "./agent.ts";
-import { makeModelSummarizer, placeholderSummarizer, type Summarizer } from "./compaction.ts";
 import { loadConfig } from "./config.ts";
 import { PRNotificationStore } from "./github/pr-store.ts";
 import { GitHubWebhookServer } from "./github/webhook-server.ts";
-import { createLogger, type Logger } from "./logger.ts";
+import { createLogger } from "./logger.ts";
 import { MetricsCollector } from "./metrics/collector.ts";
 import { MetricsServer } from "./metrics/server.ts";
 import { runPreflightChecks } from "./preflight.ts";
@@ -25,32 +24,17 @@ import { TraceRecorder } from "./trace/recorder.ts";
 import { TraceViewerServer } from "./trace/viewer-server.ts";
 
 /**
- * Entrypoint: load config → create the ChatSession → build the agent (memory
- * injection reads the active project from the session) → start the Telegram
- * adapter with a durable session.
+ * Entrypoint: load config → create the ChatSession → build the agent on the
+ * pi-durable runtime (memory injection reads the active project from the
+ * session; opening the durable store resumes any turn a previous process left
+ * unfinished) → start the Telegram adapter, which delivers recovered replies
+ * before taking new input.
  *
- * The session owns `activeProject`, so the agent's `transformContext` reads it
- * via `() => session.activeProject` — the session is constructed before the
- * agent, and the agent's transcript is bound back with `session.attach()`. This
+ * The session owns `activeProject`, so the agent's request-context injection
+ * reads it via `() => session.activeProject` — the session is constructed before
+ * the agent, and the runtime is bound back with `session.attach()`. This
  * replaces the old mutable bot holder (the dependency now points one way).
  */
-/**
- * The production summarizer: the model-backed one, falling back to the
- * model-free placeholder on failure. Compaction runs inside the turn (before
- * the reply is sent), so a summarization error must degrade the summary, never
- * drop the turn.
- */
-function makeResilientSummarizer(model: Summarizer, logger: Logger): Summarizer {
-  return async (messages, signal) => {
-    try {
-      return await model(messages, signal);
-    } catch (error) {
-      logger.withError(error).warn("model summarization failed; falling back to placeholder");
-      return placeholderSummarizer(messages, signal);
-    }
-  };
-}
-
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger({ level: config.logLevel, format: config.logFormat });
@@ -121,7 +105,7 @@ async function main(): Promise<void> {
   // The store file lives beside the other session-adjacent state files.
   const reminderStore = new ReminderStore(join(dirname(config.sessionFile), "reminders.json"));
 
-  const built = buildAgent(config, () => session.activeProject, {
+  const built = await buildAgent(config, () => session.activeProject, {
     logger,
     recorder,
     metrics,
@@ -130,8 +114,7 @@ async function main(): Promise<void> {
     onTaskDispatched: (machine, taskId, project, label) =>
       watcherHolder.watcher?.watch(machine, taskId, project, label),
   });
-  // The model-backed summarizer needs the built model, so it is injected now.
-  session.attach(built, makeResilientSummarizer(makeModelSummarizer(built.model), logger));
+  session.attach(built);
 
   const telegramClient = new TelegramClient(config.telegramBotToken, fetch, logger);
 
@@ -223,7 +206,7 @@ async function main(): Promise<void> {
       secretToken: config.telegramWebhookSecret || undefined,
       allowedChatId: config.telegramAllowedChatId,
       client: telegramClient,
-      handleMessage: (chatId, text) => bot.handleMessage(chatId, text),
+      handleMessage: (chatId, text, updateId) => bot.handleMessage(chatId, text, updateId),
       logger,
     });
     logger
@@ -253,6 +236,8 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 
+  // Polling recovers interrupted turns inside `bot.start()`; webhook mode must do it here.
+  if (webhookTransport) await bot.recover();
   const telegramTransport = webhookTransport ? webhookTransport.start() : bot.start();
   await Promise.all([
     telegramTransport,
@@ -260,6 +245,8 @@ async function main(): Promise<void> {
     retentionRunner.start(),
     reminderRunner.start(),
   ]);
+  // In-flight work is not aborted: whatever is still uncommitted resumes on the next start.
+  await built.runtime.close();
   // Let the last turn's session upload land before the process exits.
   await sessionBucket?.flush();
   logger.info("ppmagent stopped");
