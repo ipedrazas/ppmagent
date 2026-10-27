@@ -130,6 +130,8 @@ describe.skipIf(!ppmBin)("Telegram bot + durable session", () => {
     const before = store.load()?.messages.length ?? 0;
     expect(before).toBeGreaterThan(4);
 
+    // The summary is itself a model call; script it.
+    faux.setResponses([fauxAssistantMessage("SUMMARY: six acknowledged turns.")]);
     const replies = await bot.handleMessage(CHAT, "/compact");
     expect(replies[0]).toContain("Compacted:");
     const after = store.load()?.messages.length ?? 0;

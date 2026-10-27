@@ -4,9 +4,11 @@ import { type Logger, nullLogger } from "../logger.ts";
 import type { PpmClient } from "./ppm.ts";
 
 /**
- * Marks the memory-injection message. The slice is request-scoped (the durable
- * runtime sends it for one model request and never stores it), so nothing has to
- * strip a stale one — the sentinel only makes it recognisable in provider logs.
+ * Marks the memory-injection message so it can be stripped and replaced on every
+ * request (we never want two stale slices stacking up). The durable runtime
+ * sends the slice for one request only and never stores it, so a stale one
+ * should not normally reach this hook — stripping keeps the hook idempotent
+ * regardless of its caller.
  */
 const INJECTION_SENTINEL = "<!-- ppmagent:memory-context -->";
 
@@ -18,6 +20,14 @@ export interface TransformContextOptions {
   getActiveProject: () => string | undefined;
   /** Logger for surfacing context-injection failures. Defaults to discarding. */
   logger?: Logger;
+}
+
+function isInjectedSlice(message: Message): boolean {
+  return (
+    message.role === "user" &&
+    typeof message.content === "string" &&
+    message.content.startsWith(INJECTION_SENTINEL)
+  );
 }
 
 function injectedMessage(body: string): UserMessage {
@@ -43,9 +53,10 @@ export interface MemoryContextHook {
 
 /**
  * Build the request transform for the durable runtime (its `beforeRequest`
- * hook). Before every model request it asks `ppm context` for the shape-aware
- * slice of the active project and prepends it as a single sentinel-tagged user
- * message. With no active project it leaves the request untouched.
+ * hook). Before every model request it strips any prior injected slice, asks
+ * `ppm context` for the shape-aware slice of the active project and prepends it
+ * as a single sentinel-tagged user message. With no active project it leaves the
+ * request untouched.
  */
 export function makeTransformContext(opts: TransformContextOptions): MemoryContextHook {
   const log = (opts.logger ?? nullLogger).child().withContext({ component: "context" });
@@ -55,17 +66,19 @@ export function makeTransformContext(opts: TransformContextOptions): MemoryConte
     messages: readonly Message[],
     signal?: AbortSignal,
   ): Promise<readonly Message[]> => {
+    const withoutPrior = messages.filter((m) => !isInjectedSlice(m));
+
     const project = opts.getActiveProject();
     if (!project) {
       lastSliceTokens = 0;
-      return messages;
+      return withoutPrior;
     }
 
     try {
       const env = await opts.ppm.context(project, opts.recent, signal);
       const injected = injectedMessage(env.message);
       lastSliceTokens = estimateContextTokens([injected]).tokens;
-      return [injected, ...messages];
+      return [injected, ...withoutPrior];
     } catch (error) {
       // Memory-read failure must not break the turn — degrade gracefully without
       // the context slice, but surface the error so it is not silently swallowed.
@@ -74,7 +87,7 @@ export function makeTransformContext(opts: TransformContextOptions): MemoryConte
         .withMetadata({ project })
         .warn("context injection failed; proceeding without slice");
       lastSliceTokens = 0;
-      return messages;
+      return withoutPrior;
     }
   };
 
