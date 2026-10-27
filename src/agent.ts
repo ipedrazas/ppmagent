@@ -84,6 +84,7 @@ Operating rules:
 - Memory holds WHY; the tracker holds WHAT + STATUS. After tracker_create_task or tracker_create_project, record the rationale with memory_write type=task (ref/id + url), never the status.
 - Resolve open questions with memory_write type=question resolve:true once answered.
 - Keep entries atomic and typed. Prefer specific types over note.
+- DON'T retry a deterministic failure: if a tool's error says the result is fixed (complexity limit, not-found, "use the project UUID instead", resolver unavailable), stop that route — never repeat the same call with the same args. Immediately pick the cheapest fallback: create the task unfiled (no project) and record a memory note of the intended project, instead of hunting further (task reads/searches never surface project UUIDs).
 
 Cross-cutting governance (standards, initiatives, audit):
 - The injected context ends with the active project's "cross-cutting obligations". Act on them: judge a \`manual\` standard with memory_verdict (pass/fail + rationale) once you can tell; record a justified exception with memory_waive (the reason is mandatory — never waive to silence a failure).
