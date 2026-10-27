@@ -1,5 +1,5 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
+import type { AppTool } from "../tool-helpers.ts";
 import { defineTool, toolResult } from "../tool-helpers.ts";
 import { CONFIRM_SUFFIX, type ConfirmationStore } from "../tools/confirmation.ts";
 import { sanitizeLine, sanitizeString } from "../tools/sanitize.ts";
@@ -34,7 +34,7 @@ export interface TrackerToolsOptions {
  * Entities: tasks (issues) and projects are read+write; teams are read-only
  * reference data (used to resolve the team for project creation).
  */
-export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOptions): AgentTool[] {
+export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOptions): AppTool[] {
   const queryLimit = opts?.queryLimit ?? 50;
 
   /** Coerce an unknown field to a display string ("" when absent/non-string). */
@@ -203,7 +203,7 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
   const listTasks = defineTool({
     name: "tracker_list_tasks",
     description:
-      "List tasks in the tracker. Optionally narrow with filters, each a 'field<op>value' clause AND-combined by the tracker. Operators: = (eq), != (ne), ~ (contains), !~ (ncontains), > (gt), < (lt), 'in'/'nin' for comma lists. Examples: 'status=Done', 'status!=Canceled', 'project_id=<uuid>', 'labels in bug,urgent'.",
+      "List tasks in the tracker. Optionally narrow with filters, each a 'field<op>value' clause AND-combined by the tracker. Operators: = (eq), != (ne), ~ (contains), !~ (ncontains), > (gt), < (lt), 'in'/'nin' for comma lists. Examples: 'status=Done', 'status!=Canceled', 'project_id=<uuid>', 'labels in bug,urgent'. Task rows do not contain project UUIDs, so do not use this tool to discover one.",
     label: "List tasks",
     parameters: Type.Object({
       filters: Type.Optional(Type.Array(Type.String())),
@@ -217,7 +217,7 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
   const getTask = defineTool({
     name: "tracker_get_task",
     description:
-      "Get one task by its reference (e.g. ENG-123), including any fields the tracker projects (team, project, assignee, description, and live status when available).",
+      "Get one task by its reference (e.g. ENG-123), including any fields the tracker projects (team, project, assignee, description, and live status when available). The response does not contain a project UUID, so do not use this tool to discover one.",
     label: "Get task",
     parameters: Type.Object({ ref: Type.String() }),
     execute: async (_id, params, signal) => {
@@ -231,7 +231,7 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
   const listProjects = defineTool({
     name: "tracker_list_projects",
     description:
-      "List projects in the tracker, with their state, progress, and owning team(s). Optionally restrict to specific fields.",
+      "List projects in the tracker, with their state, progress, and owning team(s). Optionally restrict to specific fields. A failure mentioning query complexity (e.g. 'Query too complex') is deterministic within a session: do not retry it verbatim (same or no fields) — fall back instead.",
     label: "List projects",
     parameters: Type.Object({
       fields: Type.Optional(Type.Array(Type.String())),
@@ -245,7 +245,7 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
   const getProject = defineTool({
     name: "tracker_get_project",
     description:
-      "Get one project by its name or id, including its id (needed to update it), state, and progress.",
+      "Get one project by its name or id, including its id (needed to update it), state, and progress. A failure such as 'use the project UUID instead' is deterministic within a session: do not retry it verbatim with the same ref — fall back instead.",
     label: "Get project",
     parameters: Type.Object({ ref: Type.String() }),
     execute: async (_id, params, signal) => {

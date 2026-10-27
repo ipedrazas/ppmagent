@@ -1,10 +1,15 @@
-import { describe, expect, test } from "bun:test";
-import type { BuiltAgent } from "../src/agent.ts";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { SessionStore } from "../src/session/store.ts";
 import { TelegramBot } from "../src/telegram/bot.ts";
 import { ChatSession } from "../src/telegram/chat-session.ts";
 import type { TelegramClient } from "../src/telegram/client.ts";
 import { makeTestConfig } from "./support/config.ts";
+import { type FauxAgent, makeFauxAgent } from "./support/faux-agent.ts";
+
+const agents: FauxAgent[] = [];
+afterEach(async () => {
+  await Promise.all(agents.splice(0).map((a) => a.close()));
+});
 
 function mockStore(): SessionStore {
   return {
@@ -40,21 +45,15 @@ describe("TelegramBot.start — failed turn notification", () => {
       sendChatAction: async () => {},
     } as unknown as TelegramClient;
 
-    const built = {
-      agent: {
-        state: { messages: [] },
-        subscribe: () => () => {},
-        prompt: async () => {
-          throw new Error("model call failed");
-        },
-      },
-      ppm: {},
-      databox: {},
-      proteos: {},
-      memoryContext: { hook: async (m: unknown[]) => m, sliceTokens: () => 0 },
-    } as unknown as BuiltAgent;
-
     const config = makeTestConfig();
+    const agent = await makeFauxAgent(config);
+    agents.push(agent);
+    // The durable runtime itself failing (as opposed to a model error, which
+    // settles the turn) must still reach the user.
+    agent.built.runtime.runTurn = async () => {
+      throw new Error("model call failed");
+    };
+    const built = agent.built;
     const store = mockStore();
     const session = new ChatSession(config, { store });
     session.attach(built);
@@ -88,22 +87,14 @@ describe("TelegramBot.start — failed turn notification", () => {
       sendChatAction: async () => {},
     } as unknown as TelegramClient;
 
-    const built = {
-      agent: {
-        state: { messages: [] },
-        subscribe: () => () => {},
-        prompt: async () => {
-          thrownError = new Error("short human message");
-          throw thrownError;
-        },
-      },
-      ppm: {},
-      databox: {},
-      proteos: {},
-      memoryContext: { hook: async (m: unknown[]) => m, sliceTokens: () => 0 },
-    } as unknown as BuiltAgent;
-
     const config = makeTestConfig();
+    const agent = await makeFauxAgent(config);
+    agents.push(agent);
+    agent.built.runtime.runTurn = async () => {
+      thrownError = new Error("short human message");
+      throw thrownError;
+    };
+    const built = agent.built;
     const store = mockStore();
     const session = new ChatSession(config, { store });
     session.attach(built);
@@ -144,19 +135,10 @@ describe("TelegramBot.start — non-text message handling", () => {
       sendChatAction: async () => {},
     } as unknown as TelegramClient;
 
-    const built = {
-      agent: {
-        state: { messages: [] },
-        subscribe: () => () => {},
-        prompt: async () => {},
-      },
-      ppm: {},
-      databox: {},
-      proteos: {},
-      memoryContext: { hook: async (m: unknown[]) => m, sliceTokens: () => 0 },
-    } as unknown as BuiltAgent;
-
     const config = makeTestConfig();
+    const agent = await makeFauxAgent(config);
+    agents.push(agent);
+    const built = agent.built;
     const store = mockStore();
     const session = new ChatSession(config, { store });
     session.attach(built);

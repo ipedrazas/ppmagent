@@ -1,5 +1,5 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
+import type { AppTool } from "../tool-helpers.ts";
 import { defineTool, toolResult } from "../tool-helpers.ts";
 import { buildWriteArgs, type PpmClient, PpmError } from "./ppm.ts";
 
@@ -23,7 +23,7 @@ const WriteType = Type.Union([
  * The visible tool result is ppm's human-readable `message`; `details` carries
  * the structured payload for programmatic use.
  */
-export function buildMemoryTools(ppm: PpmClient): AgentTool[] {
+export function buildMemoryTools(ppm: PpmClient): AppTool[] {
   const memoryList = defineTool({
     name: "memory_list",
     description:

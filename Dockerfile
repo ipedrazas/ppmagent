@@ -15,27 +15,27 @@ RUN apk add --no-cache git \
 # version tags are not in `cli/vX.Y.Z` form, so go install resolves `@latest`
 # to a pseudo-version of the default branch — mirror ppm's `latest` default.
 FROM golang:1.26-alpine AS proteos-builder
-ARG PROTEOS_VERSION=latest
+ARG PROTEOS_VERSION=v0.1.7
 ENV CGO_ENABLED=0 GOBIN=/out
 RUN apk add --no-cache git \
-    && go install "github.com/tavon-ai/proteos/cli/cmd/proteos@${PROTEOS_VERSION}"
+    && go install "github.com/ipedrazas/proteos/cli/cmd/proteos@${PROTEOS_VERSION}"
 # → /out/proteos
 
 # ── Stage 3: build the `dbxcli` tracker CLI from source ──────────────────────
 # dbxcli is a Rust binary (reqwest + rustls-tls — no OpenSSL/system TLS deps).
 FROM rust:1-bookworm AS dbxcli-builder
 ARG DBXCLI_VERSION=v0.1.14
-RUN cargo install --git https://github.com/tavon-ai/dbxcli --tag "${DBXCLI_VERSION}" --locked --root /out
+RUN cargo install --git https://github.com/ipedrazas/dbxcli --tag "${DBXCLI_VERSION}" --locked --root /out
 # → /out/bin/dbxcli
 
 # ── Stage 4: install JS dependencies (cached on lockfile) ────────────────────
-FROM oven/bun:1.3.14 AS deps
+FROM oven/bun:1.4.3 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 # ── Stage 5: runtime ─────────────────────────────────────────────────────────
-FROM oven/bun:1.3.14-slim AS runtime
+FROM oven/bun:1.4.3-slim AS runtime
 LABEL org.opencontainers.image.source="https://github.com/ipedrazas/ppmagent"
 LABEL org.opencontainers.image.description="PM / Product-Owner agent (pi runtime) with ppm-backed memory"
 LABEL org.opencontainers.image.licenses="MIT"

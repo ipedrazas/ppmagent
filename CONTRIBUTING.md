@@ -7,7 +7,7 @@ By participating you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md)
 
 ## Getting started
 
-You'll need [Bun](https://bun.sh) ≥ 1.1 and [Task](https://taskfile.dev). For
+You'll need [Bun](https://bun.sh) ≥ 1.4 and [Task](https://taskfile.dev). For
 running the agent end-to-end you'll also need the [`ppm`](https://github.com/ipedrazas/ppm)
 and `dbxcli` binaries — but they are **not** required to build, typecheck, lint,
 or test the codebase.

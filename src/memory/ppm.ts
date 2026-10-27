@@ -200,7 +200,7 @@ export interface PpmClientOptions {
 /**
  * Thin typed wrapper over the `ppm` CLI. Every call appends `--root <root>` and
  * `-o json`, parses the envelope, and throws {@link PpmError} on `ok: false`
- * (carrying ppm's `error` text). The memory AgentTools (see ./tools.ts) are thin
+ * (carrying ppm's `error` text). The memory AppTools (see ./tools.ts) are thin
  * shims over these methods.
  */
 export class PpmClient {

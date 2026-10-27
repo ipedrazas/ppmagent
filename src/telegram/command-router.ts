@@ -5,7 +5,6 @@
  * command is a change here, not in the transport/poll loop.
  */
 import { COMMANDS, cmdsCommand } from "../commands/cmds.ts";
-import { contextTokens, DEFAULT_KEEP_RECENT } from "../compaction.ts";
 import type { Config } from "../config.ts";
 import { execCommand } from "../exec.ts";
 import { type Logger, nullLogger } from "../logger.ts";
@@ -83,23 +82,25 @@ export class CommandRouter {
 
     if (cmd === "context") {
       this.log.withMetadata({ chatId }).info("context reported");
-      return this.reply(chatId, session.contextReport());
+      return this.reply(chatId, await session.contextReport());
     }
 
     if (cmd === "compact") {
-      const before = contextTokens(session.messages);
-      const beforeCount = session.messages.length;
-      const outcome = await session.compact(1); // threshold 1 = always attempt
+      const outcome = await session.compact();
+      await session.refreshMessageCount();
       session.persist();
       // Message-count reduction is the true signal: the token estimate is
       // dominated by the fixed system prompt + tool schemas, so collapsing a few
       // short messages can leave the token total essentially unchanged.
-      const reply =
-        outcome.messages.length < beforeCount
-          ? `Compacted: ${beforeCount} → ${outcome.messages.length} messages (~${before.toLocaleString()} → ~${outcome.tokensAfter.toLocaleString()} tokens).`
-          : `Nothing to compact yet — ${beforeCount} messages (~${before.toLocaleString()} tokens). Compaction keeps the ${DEFAULT_KEEP_RECENT} most recent.`;
+      const reply = outcome.compacted
+        ? `Compacted: ${outcome.messagesBefore} → ${outcome.messagesAfter} messages (~${outcome.tokensBefore.toLocaleString()} → ~${outcome.tokensAfter.toLocaleString()} tokens).`
+        : `Nothing to compact yet — ${outcome.messagesBefore} messages (~${outcome.tokensBefore.toLocaleString()} tokens). Compaction keeps a recent tail verbatim.`;
       this.log
-        .withMetadata({ chatId, tokensBefore: before, tokensAfter: outcome.tokensAfter })
+        .withMetadata({
+          chatId,
+          tokensBefore: outcome.tokensBefore,
+          tokensAfter: outcome.tokensAfter,
+        })
         .info("manual compaction");
       return this.reply(chatId, reply);
     }
@@ -127,7 +128,7 @@ export class CommandRouter {
     }
 
     if (cmd === "session") {
-      return this.reply(chatId, session.sessionReport());
+      return this.reply(chatId, await session.sessionReport());
     }
 
     if (cmd === "describe") {

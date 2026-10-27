@@ -8,13 +8,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { uuidv7 } from "@earendil-works/pi-agent-core";
+import { uuidv7 } from "@earendil-works/pi-ai";
+import type { SessionMirror } from "./bucket.ts";
 
 /**
- * Durable per-chat session: the transcript plus the active project and an
- * optional human-readable name. Persisted as JSON so the agent survives restarts
- * (spike DoD: continuity across a restart).
+ * Per-chat session metadata: the active project, an optional human-readable
+ * name, and the link to the session's durable conversation. The transcript
+ * itself lives in the pi-durable store (see `runtime/runtime.ts`) — this file
+ * only says *which* conversation belongs to the session. Persisted as JSON so
+ * the agent survives restarts (spike DoD: continuity across a restart).
  */
 export interface SessionState {
   sessionId: string;
@@ -23,7 +25,21 @@ export interface SessionState {
   activeProject?: string;
   /** Toggled via `/describe`; prepends a reasoning-detail prompt to each turn. */
   describeEnabled?: boolean;
-  messages: AgentMessage[];
+  /**
+   * The session's pi-durable conversation id. Absent until the session's first
+   * use (conversations are created lazily so throwaway sessions cost nothing).
+   */
+  conversationId?: number;
+  /**
+   * Read-only export of the transcript as of the last turn, kept so the
+   * (redacted) session file and its bucket mirror stay human- and casa-readable
+   * in the same format as before. The durable store is the source of truth;
+   * this is never read back into it (legacy files' inline transcripts are
+   * simply carried until the next turn refreshes them).
+   */
+  messages: unknown[];
+  /** Messages in the conversation as of the last save — for listings, which cannot read the store. */
+  messageCount: number;
   /** Epoch millis; set at creation, never changed. */
   createdAt: number;
   /** Epoch millis; refreshed on every save. */
@@ -47,6 +63,7 @@ export function newSession(name?: string): SessionState {
     name,
     describeEnabled: false,
     messages: [],
+    messageCount: 0,
     createdAt: now,
     updatedAt: now,
   };
@@ -83,10 +100,14 @@ export class SessionStore {
    * @param sanitize - Optional transform applied to the session state before
    *   writing to disk. Use to redact secrets from persisted data without
    *   altering the in-memory state.
+   * @param mirror - Optional remote copy (e.g. a bucket casa reads) that is
+   *   handed each session file as written, sanitized. Deletions are not
+   *   mirrored: the remote copy outlives local retention.
    */
   constructor(
     filePath: string,
     private readonly sanitize?: (v: unknown) => unknown,
+    private readonly mirror?: SessionMirror,
   ) {
     this.legacyFile = filePath;
     this.root = dirname(filePath);
@@ -102,15 +123,20 @@ export class SessionStore {
   private parse(raw: string | null): SessionState | null {
     if (raw == null) return null;
     try {
+      // Pre-durable session files carried the transcript inline as `messages`.
+      // It is not migrated (the durable store is the source of truth now); the
+      // session keeps its name/project and starts a fresh conversation.
       const p = JSON.parse(raw) as Partial<SessionState>;
-      if (!p.sessionId || !Array.isArray(p.messages)) return null;
+      if (!p.sessionId) return null;
       const now = Date.now();
       return {
         sessionId: p.sessionId,
         name: p.name,
         activeProject: p.activeProject,
         describeEnabled: p.describeEnabled ?? false,
-        messages: p.messages,
+        conversationId: typeof p.conversationId === "number" ? p.conversationId : undefined,
+        messages: Array.isArray(p.messages) ? p.messages : [],
+        messageCount: p.messageCount ?? 0,
         createdAt: p.createdAt ?? now,
         updatedAt: p.updatedAt ?? now,
       };
@@ -163,9 +189,11 @@ export class SessionStore {
     const file = this.file(state.sessionId);
     const tmp = `${file}.tmp`;
     const toWrite = this.sanitize ? this.sanitize(state) : state;
-    writeFileSync(tmp, JSON.stringify(toWrite, null, 2));
+    const body = JSON.stringify(toWrite, null, 2);
+    writeFileSync(tmp, body);
     renameSync(tmp, file);
     this.setCurrent(state.sessionId);
+    this.mirror?.put(state.sessionId, body);
   }
 
   /** Load the last-seen Telegram update offset, or 0 if not yet persisted. */
@@ -197,7 +225,7 @@ export class SessionStore {
           sessionId: s.sessionId,
           name: s.name,
           activeProject: s.activeProject,
-          messageCount: s.messages.length,
+          messageCount: s.messageCount,
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
         });

@@ -1,5 +1,5 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
+import type { AppTool } from "../tool-helpers.ts";
 import { defineTool, toolResult } from "../tool-helpers.ts";
 import { CONFIRM_SUFFIX, type ConfirmationStore } from "../tools/confirmation.ts";
 import { sanitizeLine } from "../tools/sanitize.ts";
@@ -21,7 +21,7 @@ export interface PulseToolsOptions {
  * they go through the confirmation gate like other mutating tools; pulse_pull
  * only fetches an image and does not disturb running containers.
  */
-export function buildPulseTools(pulse: PulseClient, opts?: PulseToolsOptions): AgentTool[] {
+export function buildPulseTools(pulse: PulseClient, opts?: PulseToolsOptions): AppTool[] {
   const nodeParam = Type.Optional(
     Type.String({ description: "node/agent name; omits to use pulse's default node" }),
   );

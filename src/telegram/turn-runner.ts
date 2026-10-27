@@ -1,33 +1,27 @@
 /**
  * Runs a single agent turn for one inbound message: intercepts a pending
- * confirmation reply, shows the typing indicator, drives `agent.prompt`,
- * collects the reply (assistant text or an `ask_user`/confirmation prompt),
- * compacts, persists, and sends. Extracted from {@link TelegramBot} so turn
- * orchestration is one testable unit, separate from transport and commands.
+ * confirmation reply, shows the typing indicator, submits the message to the
+ * session's durable conversation, collects the reply (assistant text or an
+ * `ask_user`/confirmation prompt), persists, and sends. Extracted from
+ * {@link TelegramBot} so turn orchestration is one testable unit, separate from
+ * transport and commands.
+ *
+ * Turns are durable: the input is committed under a request id before the model
+ * is called, so a crash mid-turn is finished by {@link TurnRunner.recoverPending}
+ * on the next start, and a redelivered update joins the admitted turn instead of
+ * running twice.
  */
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import type { BuiltAgent } from "../agent.ts";
 import type { Config } from "../config.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import type { MetricsCollector } from "../metrics/collector.ts";
+import { messageText, type PendingTurn, type TurnOutcome } from "../runtime/runtime.ts";
 import { type ConfirmationStore, isApproval, isRejection } from "../tools/confirmation.ts";
 import { clipPayload, type TraceRecorder } from "../trace/recorder.ts";
 import type { ChatSession } from "./chat-session.ts";
 import type { TelegramClient } from "./client.ts";
 import type { Send } from "./reply.ts";
-
-/** Extract the visible text from a tool result that carries content blocks. */
-function extractToolText(result: unknown): string {
-  const content = (result as { content?: Array<{ type?: string; text?: string }> } | undefined)
-    ?.content;
-  if (!Array.isArray(content)) return "";
-  return content.find((c) => c?.type === "text")?.text ?? "";
-}
-
-/** True when the tool result sets terminate:true (stops the agent loop). */
-function isTerminating(result: unknown): boolean {
-  return (result as { terminate?: boolean } | undefined)?.terminate === true;
-}
 
 /** Render a tool call's args/result as a fenced JSON block, clipped to a safe size. */
 function formatPayload(value: unknown): string {
@@ -44,8 +38,7 @@ function formatToolStart(toolName: string, args: unknown): string {
 }
 
 /** Format a `tool_execution_end` event as a Telegram status message. */
-function formatToolEnd(toolName: string, result: unknown, isError: boolean): string {
-  const text = extractToolText(result) || formatPayload(result);
+function formatToolEnd(toolName: string, text: string, isError: boolean): string {
   const icon = isError ? "❌" : "✅";
   return `${icon} \`${toolName}\` ${isError ? "failed" : "done"}\n\`\`\`\n${text}\n\`\`\``;
 }
@@ -58,20 +51,6 @@ const DESCRIBE_MODE_PROMPT =
   "You are in describe mode. Before each tool call, explain why you are calling " +
   "that tool, what you expect to get from it, and after receiving the response, " +
   "explain what you learned and how it affects your next decision.";
-
-/** Concatenated text of the most recent assistant message, if any. */
-function lastAssistantText(messages: AgentMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m && "role" in m && m.role === "assistant" && Array.isArray(m.content)) {
-      return m.content
-        .filter((c): c is { type: "text"; text: string } => c?.type === "text")
-        .map((c) => c.text)
-        .join("");
-    }
-  }
-  return "";
-}
 
 export interface TurnRunnerDeps {
   session: ChatSession;
@@ -110,7 +89,7 @@ export class TurnRunner {
    * Handle one inbound message as an agent turn (or as a reply to a pending
    * confirmation). Returns the replies sent.
    */
-  async run(chatId: number, text: string): Promise<string[]> {
+  async run(chatId: number, text: string, updateId?: number): Promise<string[]> {
     const { session, confirmationStore, recorder } = this.deps;
     const trimmed = text.trim();
     const turnLog = this.log.withContext({ chatId, project: session.activeProject });
@@ -170,71 +149,17 @@ export class TurnRunner {
       }
     }
 
-    const outbound: string[] = [];
-    // Text from any tool that terminates the loop (ask_user, confirmation gates),
-    // captured separately so it can be appended after the assistant's leading
-    // context text — the two are pulled from different places at different
-    // times, but the context text always precedes the terminating tool call
-    // within the same assistant message and must stay first in the reply.
-    const terminatingReplies: string[] = [];
+    const conversationId = await session.ensureConversation();
+    const { runtime } = this.deps.built;
     const stopTyping = this.startTyping(chatId);
 
-    // Per-turn tool budget — block and abort when the per-turn call count is exceeded.
-    const prevBeforeToolCall = this.deps.built.agent.beforeToolCall;
-    if (this.deps.config.turnMaxTools > 0) {
-      let toolsUsed = 0;
-      const limit = this.deps.config.turnMaxTools;
-      this.deps.built.agent.beforeToolCall = async (ctx, signal) => {
-        toolsUsed++;
-        if (toolsUsed > limit) {
-          this.deps.built.agent.abort();
-          return {
-            block: true,
-            reason: `Per-turn tool budget of ${limit} call(s) exceeded.`,
-          };
-        }
-        return prevBeforeToolCall ? prevBeforeToolCall(ctx, signal) : undefined;
-      };
-    }
-
-    // Cause of a failed model call. pi-agent-core swallows provider errors: a
-    // failed run is reported as an assistant message with empty text and the
-    // real cause in `errorMessage`, and `prompt()` resolves normally. Without
-    // capturing it here the turn silently produces "(no reply)" — the same
-    // symptom for a bad model id, a rejected API key, and a provider outage.
-    let modelError: string | undefined;
-    const unsubscribe = this.deps.built.agent.subscribe((event) => {
-      if (event.type === "tool_execution_end" && isTerminating(event.result)) {
-        const t = extractToolText(event.result);
-        if (t) terminatingReplies.push(t);
-      } else if (event.type === "turn_end") {
-        const { message } = event;
-        if ("role" in message && message.role === "assistant" && message.errorMessage) {
-          modelError = message.errorMessage;
-        }
-      }
+    // Per-turn limits (tool budget, provider-reported spend) — enforced inside the
+    // runtime's generation/tool hooks, so a trip blocks the next call rather than
+    // racing the event stream. Either trip aborts the turn.
+    const guard = runtime.guardTurn(conversationId, {
+      maxTools: this.deps.config.turnMaxTools,
+      maxCostUsd: this.deps.config.turnMaxCostUsd,
     });
-
-    // Per-turn cost limit — abort mid-turn once the accumulated provider-reported
-    // spend for this turn exceeds the threshold.
-    let turnCostExceeded = false;
-    let turnCostSoFar = 0;
-    const unsubscribeCost =
-      this.deps.config.turnMaxCostUsd > 0
-        ? this.deps.built.agent.subscribe((event) => {
-            if (event.type !== "turn_end") return;
-            const { message } = event;
-            if (!("role" in message) || message.role !== "assistant") return;
-            turnCostSoFar += message.usage.cost.total;
-            if (turnCostSoFar > this.deps.config.turnMaxCostUsd) {
-              turnCostExceeded = true;
-              turnLog
-                .withMetadata({ cost: turnCostSoFar, limit: this.deps.config.turnMaxCostUsd })
-                .warn("per-turn cost limit exceeded");
-              this.deps.built.agent.abort();
-            }
-          })
-        : null;
 
     // Tool-calling status — send an incremental Telegram message for each tool
     // call and its result as the turn progresses. Sends are queued (not
@@ -250,19 +175,30 @@ export class TurnRunner {
         });
     };
     const unsubscribeToolStatus = this.deps.config.showToolCalls
-      ? this.deps.built.agent.subscribe((event) => {
+      ? runtime.subscribe(conversationId, (event) => {
           if (event.type === "tool_execution_start") {
+            if (event.parentToolCallId) return;
             queueToolStatus(formatToolStart(event.toolName, event.args));
           } else if (event.type === "tool_execution_end") {
-            queueToolStatus(formatToolEnd(event.toolName, event.result, event.isError));
+            if (event.parentToolCallId) return;
+            const result = event.entry?.model?.[0] as ToolResultMessage | undefined;
+            queueToolStatus(
+              formatToolEnd(
+                event.toolName,
+                messageText(result) || "(no output)",
+                result?.isError ?? true,
+              ),
+            );
           }
         })
       : null;
 
     const promptText = session.describeEnabled ? `${DESCRIBE_MODE_PROMPT}\n\n${text}` : text;
+    const requestId = `tg:${chatId}:${updateId ?? crypto.randomUUID()}`;
 
+    let outcome: TurnOutcome;
     try {
-      await this.deps.built.agent.prompt(promptText);
+      outcome = await runtime.runTurn(conversationId, promptText, { requestId });
     } catch (error) {
       const durationMs = Math.round(performance.now() - startedAt);
       turnLog.withError(error).error("agent turn failed");
@@ -271,47 +207,26 @@ export class TurnRunner {
       throw error;
     } finally {
       stopTyping();
-      unsubscribe();
-      unsubscribeCost?.();
       unsubscribeToolStatus?.();
+      guard.release();
       await toolStatusQueue;
-      this.deps.built.agent.beforeToolCall = prevBeforeToolCall;
     }
 
-    const assistant = lastAssistantText(session.messages);
-    if (assistant) outbound.push(assistant);
-    outbound.push(...terminatingReplies);
-
-    if (turnCostExceeded) {
+    const outbound = this.repliesFor(outcome, turnLog);
+    if (guard.exceeded === "cost") {
+      turnLog
+        .withMetadata({ cost: guard.costUsd, limit: this.deps.config.turnMaxCostUsd })
+        .warn("per-turn cost limit exceeded");
       outbound.push(
         `[Per-turn cost limit of $${this.deps.config.turnMaxCostUsd} reached. Processing stopped.]`,
       );
     }
 
-    const outcome = await session.compact(this.deps.config.compactionTokenThreshold);
-    if (outcome.compacted) {
-      turnLog.withMetadata({ messages: outcome.messages.length }).info("transcript compacted");
-    }
-
+    await session.refreshMessageCount();
     session.persist();
 
     if (outbound.length === 0) {
-      if (modelError) {
-        turnLog
-          .withMetadata({
-            model: this.deps.built.model.id,
-            provider: this.deps.built.model.provider,
-          })
-          .error(`model call failed: ${modelError}`);
-        outbound.push(
-          `⚠️ The model call failed, so there is no answer to send.\n\n` +
-            `\`${modelError}\`\n\n` +
-            `Model: \`${this.deps.built.model.provider}/${this.deps.built.model.id}\``,
-        );
-      } else {
-        turnLog.warn("turn produced no reply and no model error");
-        outbound.push("(no reply)");
-      }
+      outbound.push(this.emptyReply(outcome, turnLog));
     }
     await this.deps.send(chatId, outbound);
     const durationMs = Math.round(performance.now() - startedAt);
@@ -319,11 +234,85 @@ export class TurnRunner {
       type: "turn_end",
       durationMs,
       replies: outbound.length,
-      ...(modelError ? { modelError } : {}),
+      ...(outcome.modelError ? { modelError: outcome.modelError } : {}),
     });
     this.deps.metrics?.recordTurn({ durationMs });
     turnLog.withMetadata({ replies: outbound.length, durationMs }).info("message handled");
     return outbound;
+  }
+
+  /**
+   * The assistant's text followed by any terminating tool's reply (ask_user,
+   * confirmation gates). The assistant's leading context always precedes the
+   * terminating tool call within the same message and must stay first.
+   */
+  private repliesFor(outcome: TurnOutcome, _log: Logger): string[] {
+    const replies: string[] = [];
+    if (outcome.assistantText) replies.push(outcome.assistantText);
+    replies.push(...outcome.terminatingReplies);
+    return replies;
+  }
+
+  /**
+   * Reply for a turn that produced nothing. The provider's cause is surfaced —
+   * a failed run is committed with empty text and the real cause in the
+   * submission's `detail`; without it the turn would read "(no reply)" for a bad
+   * model id, a rejected API key and a provider outage alike.
+   */
+  private emptyReply(outcome: TurnOutcome, log: Logger): string {
+    const { model } = this.deps.built;
+    if (outcome.modelError) {
+      log
+        .withMetadata({ model: model.id, provider: model.provider })
+        .error(`model call failed: ${outcome.modelError}`);
+      return (
+        `⚠️ The model call failed, so there is no answer to send.\n\n` +
+        `\`${outcome.modelError}\`\n\n` +
+        `Model: \`${model.provider}/${model.id}\``
+      );
+    }
+    log.withMetadata({ reason: outcome.reason }).warn("turn produced no reply and no model error");
+    return "(no reply)";
+  }
+
+  /**
+   * Finish turns the previous process left unfinished (crash, deploy, OOM kill).
+   * The durable runtime has already resumed the underlying work when it was
+   * opened; this waits for each turn to settle and delivers its reply, which the
+   * dead process never got to send. Replies go to the chat encoded in the turn's
+   * request id, else to `fallbackChatId`.
+   */
+  async recoverPending(fallbackChatId?: number): Promise<number> {
+    const { runtime } = this.deps.built;
+    const pending = await runtime.pendingTurns();
+    for (const turn of pending) {
+      await this.recoverOne(turn, fallbackChatId);
+    }
+    return pending.length;
+  }
+
+  private async recoverOne(turn: PendingTurn, fallbackChatId?: number): Promise<void> {
+    const encoded = turn.requestId?.match(/^tg:(-?\d+):/)?.[1];
+    const chatId = encoded !== undefined ? Number(encoded) : fallbackChatId;
+    const turnLog = this.log.withContext({ chatId, requestId: turn.requestId });
+    turnLog.info("recovering unfinished turn");
+    this.deps.built.observe(turn.conversationId);
+    try {
+      const outcome = await this.deps.built.runtime.awaitTurn(turn);
+      const replies = this.repliesFor(outcome, turnLog);
+      if (replies.length === 0) replies.push(this.emptyReply(outcome, turnLog));
+      if (chatId !== undefined) {
+        await this.deps.send(chatId, [
+          "↩️ Recovered a turn that was interrupted by a restart:",
+          ...replies,
+        ]);
+      }
+      await this.deps.session.refreshMessageCount();
+      this.deps.session.persist();
+      turnLog.withMetadata({ replies: replies.length }).info("recovered turn delivered");
+    } catch (error) {
+      turnLog.withError(error).error("failed to recover unfinished turn");
+    }
   }
 
   /** Send a single reply and return it as the replies array. */

@@ -95,7 +95,7 @@ export class SessionIndex {
       sessionId: state.sessionId,
       name: state.name,
       activeProject: state.activeProject,
-      messageCount: state.messages.length,
+      messageCount: state.messageCount,
       createdAt: state.createdAt,
       updatedAt: state.updatedAt,
       projects,

@@ -1,10 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import type { BuiltAgent } from "../src/agent.ts";
+import { afterEach, describe, expect, test } from "bun:test";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { SessionStore } from "../src/session/store.ts";
 import { TelegramBot } from "../src/telegram/bot.ts";
 import { ChatSession } from "../src/telegram/chat-session.ts";
 import type { TelegramClient } from "../src/telegram/client.ts";
 import { makeTestConfig } from "./support/config.ts";
+import { type FauxAgent, lastUserText, makeFauxAgent } from "./support/faux-agent.ts";
 
 function mockStore(): SessionStore {
   return {
@@ -17,25 +18,13 @@ function mockStore(): SessionStore {
   } as unknown as SessionStore;
 }
 
-/** A fake `BuiltAgent` that records every prompt it receives. */
-function fakeBuiltAgent(prompts: string[]): BuiltAgent {
-  return {
-    agent: {
-      state: { messages: [] },
-      subscribe: () => () => {},
-      prompt: async (text: string) => {
-        prompts.push(text);
-      },
-    },
-    ppm: {},
-    databox: {},
-    proteos: {},
-    memoryContext: { hook: async (m: unknown[]) => m, sliceTokens: () => 0 },
-  } as unknown as BuiltAgent;
-}
+const agents: FauxAgent[] = [];
+afterEach(async () => {
+  await Promise.all(agents.splice(0).map((a) => a.close()));
+});
 
-/** Drive a single inbound message through a fresh TelegramBot and return prompts seen. */
-function makeBot(prompts: string[]) {
+/** Drive inbound messages through a fresh TelegramBot and record the user text the model saw. */
+async function makeBot(prompts: string[]) {
   let callCount = 0;
   const messages: string[] = [];
   const ctx: { stop: () => void } = { stop: () => {} };
@@ -53,10 +42,17 @@ function makeBot(prompts: string[]) {
 
   const config = makeTestConfig();
   const store = mockStore();
-  const built = fakeBuiltAgent(prompts);
+  const agent = await makeFauxAgent(config);
+  agents.push(agent);
+  agent.faux.setResponses(
+    Array.from({ length: 8 }, () => (context: Parameters<typeof lastUserText>[0]) => {
+      prompts.push(lastUserText(context));
+      return fauxAssistantMessage("ok");
+    }),
+  );
   const session = new ChatSession(config, { store });
-  session.attach(built);
-  const bot = new TelegramBot(config, built, session, { client, store });
+  session.attach(agent.built);
+  const bot = new TelegramBot(config, agent.built, session, { client, store });
   ctx.stop = () => bot.stop();
   return { bot, enqueue: (text: string) => messages.push(text) };
 }
@@ -64,7 +60,7 @@ function makeBot(prompts: string[]) {
 describe("/describe mode", () => {
   test("disabled by default: the user message passes through unchanged", async () => {
     const prompts: string[] = [];
-    const { bot, enqueue } = makeBot(prompts);
+    const { bot, enqueue } = await makeBot(prompts);
     enqueue("hello there");
     await bot.start();
     expect(prompts).toEqual(["hello there"]);
@@ -72,18 +68,18 @@ describe("/describe mode", () => {
 
   test("once enabled, the reasoning prompt is prepended to subsequent turns", async () => {
     const prompts: string[] = [];
-    const { bot, enqueue } = makeBot(prompts);
+    const { bot, enqueue } = await makeBot(prompts);
     enqueue("/describe on");
     enqueue("hello there");
     await bot.start();
-    expect(prompts).toHaveLength(1); // only the agent turn calls prompt(); /describe is local
+    expect(prompts).toHaveLength(1); // only the agent turn reaches the model; /describe is local
     expect(prompts[0]).toContain("You are in describe mode.");
     expect(prompts[0]).toContain("hello there");
   });
 
   test("turning it back off restores the unmodified message", async () => {
     const prompts: string[] = [];
-    const { bot, enqueue } = makeBot(prompts);
+    const { bot, enqueue } = await makeBot(prompts);
     enqueue("/describe on");
     enqueue("/describe off");
     enqueue("hello there");

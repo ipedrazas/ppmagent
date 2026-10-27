@@ -1,6 +1,6 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import type { PpmClient } from "../memory/ppm.ts";
+import type { AppTool } from "../tool-helpers.ts";
 import { defineTool, toolResult } from "../tool-helpers.ts";
 
 /**
@@ -15,7 +15,7 @@ import { defineTool, toolResult } from "../tool-helpers.ts";
  * sets `terminate: true`, so the prompt must forbid batching other tools with
  * `ask_user`.
  */
-export function buildAskUserTool(ppm: PpmClient): AgentTool {
+export function buildAskUserTool(ppm: PpmClient): AppTool {
   return defineTool({
     name: "ask_user",
     description:
