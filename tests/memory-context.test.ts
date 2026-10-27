@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { Message } from "@earendil-works/pi-ai";
 import { makeTransformContext } from "../src/memory/context.ts";
 import type { PpmClient } from "../src/memory/ppm.ts";
 
-const msg = (text: string): AgentMessage => ({ role: "user", content: text, timestamp: 1 });
+const msg = (text: string): Message => ({ role: "user", content: text, timestamp: 1 });
 
 function fakePpm(body: string): PpmClient {
   return {

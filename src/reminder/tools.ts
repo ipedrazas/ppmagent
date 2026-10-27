@@ -1,5 +1,5 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
+import type { AppTool } from "../tool-helpers.ts";
 import { defineTool, toolResult } from "../tool-helpers.ts";
 import { formatDueAt, parseWhen } from "./parse.ts";
 import type { ReminderStore } from "./store.ts";
@@ -11,7 +11,7 @@ import type { ReminderStore } from "./store.ts";
  * `reminder_list`   — list all pending reminders.
  * `reminder_cancel` — cancel a reminder by id.
  */
-export function buildReminderTools(store: ReminderStore): AgentTool[] {
+export function buildReminderTools(store: ReminderStore): AppTool[] {
   const reminderCreate = defineTool({
     name: "reminder_create",
     description:

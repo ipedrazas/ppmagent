@@ -1,5 +1,5 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
+import type { AppTool } from "../tool-helpers.ts";
 import { defineTool, toolResult } from "../tool-helpers.ts";
 import { CONFIRM_SUFFIX, type ConfirmationStore } from "../tools/confirmation.ts";
 import { sanitizeLine, sanitizeString } from "../tools/sanitize.ts";
@@ -34,7 +34,7 @@ export interface TrackerToolsOptions {
  * Entities: tasks (issues) and projects are read+write; teams are read-only
  * reference data (used to resolve the team for project creation).
  */
-export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOptions): AgentTool[] {
+export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOptions): AppTool[] {
   const queryLimit = opts?.queryLimit ?? 50;
 
   /** Coerce an unknown field to a display string ("" when absent/non-string). */

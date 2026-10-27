@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed — BREAKING (TAV-226)
+- **Migrated the agent runtime from `@earendil-works/pi-ai` 0.82.1 +
+  `pi-agent-core` to pi durable** (`@earendil-works/pi-durable`, `pi-ai`, `chord`
+  1.4.0). Turns, model responses and tool calls are committed to a SQLite store
+  (`PPMA_DURABLE_DB`) before they run; a crashed turn resumes from its last
+  checkpoint on the next start and its reply is delivered to the chat
+  ("↩️ Recovered a turn that was interrupted by a restart"). Request ids
+  (`tg:<chat>:<update>`) make redelivered updates idempotent. Read-only tools are
+  replayed after a crash; state-writing tools are not (the model is told they
+  were interrupted). Graceful shutdown no longer aborts in-flight turns.
+- Session JSON no longer owns the transcript: it stores the durable conversation
+  id and a read-only `messages` export. **Existing transcripts are not imported**;
+  names/projects survive. `buildAgent()` is now async and returns `{ runtime }`;
+  `AgentTool` is replaced by the runtime-independent `AppTool`. Compaction uses
+  durable's (model-based, retried) mechanism; the model-free placeholder
+  summarizer and `maybeCompact` are removed. Per-turn tool and cost limits are
+  enforced in durable hooks. See "Migrating" in the README.
+
 ### Added
 - **Phase 5 — Telegram adapter + durable session.** A minimal fetch-based
   Telegram Bot API client, a file-backed `SessionStore` (sessionId + active

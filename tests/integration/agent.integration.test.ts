@@ -1,25 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { StreamFn } from "@earendil-works/pi-agent-core";
-import type { FauxProviderHandle } from "@earendil-works/pi-ai";
-import {
-  createModels,
-  fauxAssistantMessage,
-  fauxProvider,
-  fauxToolCall,
-} from "@earendil-works/pi-ai";
-import { buildAgent } from "../../src/agent.ts";
+import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-works/pi-ai";
 import type { Config } from "../../src/config.ts";
 import { makeTransformContext } from "../../src/memory/context.ts";
 import { PpmClient } from "../../src/memory/ppm.ts";
 import { MetricsCollector } from "../../src/metrics/collector.ts";
 import { TraceRecorder } from "../../src/trace/recorder.ts";
 import { makeTestConfig } from "../support/config.ts";
+import { type FauxAgent, fauxToolTurn, makeFauxAgent } from "../support/faux-agent.ts";
 
-// Step 2 (agent + ask_user) driven by pi's faux provider — deterministic, no
-// API key. Needs the real `ppm` binary for the open-question write, so it skips
-// when ppm is absent (CI installs it).
+// Step 2 (agent + ask_user) driven by pi's faux provider on a real pi-durable
+// runtime — deterministic, no API key. Needs the real `ppm` binary for the
+// open-question write, so it skips when ppm is absent (CI installs it).
 const ppmBin = Bun.which("ppm");
 const PROJECT = "onboarding";
 
@@ -32,55 +25,54 @@ function testConfig(root: string): Config {
   });
 }
 
+/** Names of the tools the model called, in order. */
+function toolNames(messages: Message[]): string[] {
+  return messages.flatMap((m) =>
+    m.role === "assistant" ? m.content.filter((c) => c.type === "toolCall").map((c) => c.name) : [],
+  );
+}
+
 describe.skipIf(!ppmBin)("agent + ask_user", () => {
   let root: string;
   let ppm: PpmClient;
-  let faux: FauxProviderHandle;
-  let models: ReturnType<typeof createModels>;
-  const fauxStream: StreamFn = (model, context, options) =>
-    models.streamSimple(model, context, options);
+  let agent: FauxAgent;
 
   beforeEach(async () => {
     root = mkdtempSync(join(import.meta.dir, ".agentroot-"));
     ppm = new PpmClient({ bin: ppmBin ?? "ppm", root });
     await ppm.run(["init"]);
     await ppm.projectCreate(PROJECT, "Onboarding drop-off");
-    faux = fauxProvider({ provider: "faux", models: [{ id: "faux-1" }] });
-    models = createModels();
-    models.setProvider(faux.provider);
+    agent = await makeFauxAgent(testConfig(root), { project: () => PROJECT });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await agent.close();
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
+  /** Run one turn on a fresh conversation of the agent under test. */
+  async function runTurn(text: string, built = agent.built) {
+    const conversation = await built.runtime.createConversation();
+    return { conversation, outcome: await built.runtime.runTurn(conversation, text) };
+  }
+
   test("a vague prompt yields one clarifying question, records it, and stops", async () => {
-    faux.setResponses([
-      fauxAssistantMessage([
+    agent.faux.setResponses([
+      fauxToolTurn(
         fauxToolCall("ask_user", {
           question: "What metric defines onboarding drop-off success?",
           project: PROJECT,
         }),
-      ]),
+      ),
     ]);
 
-    const { agent } = buildAgent(testConfig(root), () => PROJECT, {
-      model: faux.getModel(),
-      streamFn: fauxStream,
-    });
-    const toolStarts: string[] = [];
-    let ended = false;
-    agent.subscribe((e) => {
-      if (e.type === "tool_execution_start") toolStarts.push(e.toolName);
-      if (e.type === "agent_end") ended = true;
-    });
-
-    await agent.prompt("we should do something about onboarding drop-off");
+    const { outcome } = await runTurn("we should do something about onboarding drop-off");
 
     // One model turn only — terminate stopped the loop before a second call.
-    expect(faux.state.callCount).toBe(1);
-    expect(toolStarts).toEqual(["ask_user"]);
-    expect(ended).toBe(true);
+    expect(agent.faux.state.callCount).toBe(1);
+    expect(toolNames(outcome.messages)).toEqual(["ask_user"]);
+    expect(outcome.status).toBe("done");
+    expect(outcome.terminatingReplies.join(" ")).toContain("What metric defines");
 
     // The question is recorded as an OPEN question in memory.
     const ctx = await ppm.context(PROJECT, 5);
@@ -89,16 +81,12 @@ describe.skipIf(!ppmBin)("agent + ask_user", () => {
   });
 
   test("the recorded open question reappears in the next injected slice", async () => {
-    faux.setResponses([
-      fauxAssistantMessage([
+    agent.faux.setResponses([
+      fauxToolTurn(
         fauxToolCall("ask_user", { question: "Who owns the onboarding metric?", project: PROJECT }),
-      ]),
+      ),
     ]);
-    const { agent } = buildAgent(testConfig(root), () => PROJECT, {
-      model: faux.getModel(),
-      streamFn: fauxStream,
-    });
-    await agent.prompt("improve onboarding");
+    await runTurn("improve onboarding");
 
     const { hook: transform } = makeTransformContext({
       ppm,
@@ -114,32 +102,39 @@ describe.skipIf(!ppmBin)("agent + ask_user", () => {
     expect(text).toContain("Who owns the onboarding metric?");
   });
 
+  test("the model sees the injected memory slice on every request, and it is never stored", async () => {
+    const seen: string[] = [];
+    agent.faux.setResponses([
+      (context) => {
+        seen.push(JSON.stringify(context.messages));
+        return fauxAssistantMessage("ok");
+      },
+    ]);
+    const { conversation } = await runTurn("hello");
+
+    expect(seen[0]).toContain("memory-context");
+    const stored = await agent.built.runtime.messages(conversation);
+    expect(JSON.stringify(stored)).not.toContain("memory-context");
+  });
+
   test("the agent loops through a memory_write tool call and finishes", async () => {
-    faux.setResponses([
-      fauxAssistantMessage([
+    agent.faux.setResponses([
+      fauxToolTurn(
         fauxToolCall("memory_write", {
           project: PROJECT,
           type: "decision",
           content: "Scope the first task to the email nudge only.",
         }),
-      ]),
+      ),
       fauxAssistantMessage("Recorded the decision."),
     ]);
 
-    const { agent } = buildAgent(testConfig(root), () => PROJECT, {
-      model: faux.getModel(),
-      streamFn: fauxStream,
-    });
-    const toolStarts: string[] = [];
-    agent.subscribe((e) => {
-      if (e.type === "tool_execution_start") toolStarts.push(e.toolName);
-    });
-
-    await agent.prompt("scope the onboarding work");
+    const { outcome } = await runTurn("scope the onboarding work");
 
     // Two model turns: the tool call, then the natural-language wrap-up.
-    expect(faux.state.callCount).toBe(2);
-    expect(toolStarts).toEqual(["memory_write"]);
+    expect(agent.faux.state.callCount).toBe(2);
+    expect(toolNames(outcome.messages)).toEqual(["memory_write"]);
+    expect(outcome.assistantText).toBe("Recorded the decision.");
 
     const { data } = await ppm.context(PROJECT, 5);
     const decisions = data.recentDecisions.map((d) => d.body);
@@ -147,30 +142,34 @@ describe.skipIf(!ppmBin)("agent + ask_user", () => {
   });
 
   test("trace records tool results and assistant text; metrics record provider usage", async () => {
-    faux.setResponses([
-      fauxAssistantMessage([
-        fauxToolCall("memory_write", {
-          project: PROJECT,
-          type: "decision",
-          content: "Scope the first task to the email nudge only.",
-        }),
-      ]),
-      fauxAssistantMessage("Recorded the decision."),
-    ]);
-
     const traceDir = mkdtempSync(join(root, "traces-"));
     const recorder = new TraceRecorder(traceDir);
     recorder.setSession("s-1");
     const metrics = new MetricsCollector();
 
-    const { agent } = buildAgent(testConfig(root), () => PROJECT, {
-      model: faux.getModel(),
-      streamFn: fauxStream,
+    const traced = await makeFauxAgent(testConfig(root), {
+      project: () => PROJECT,
       recorder,
       metrics,
     });
-
-    await agent.prompt("scope the onboarding work");
+    traced.faux.setResponses([
+      fauxToolTurn(
+        fauxToolCall("memory_write", {
+          project: PROJECT,
+          type: "decision",
+          content: "Scope the first task to the email nudge only.",
+        }),
+      ),
+      fauxAssistantMessage("Recorded the decision."),
+    ]);
+    try {
+      const conversation = await traced.built.runtime.createConversation();
+      traced.built.observe(conversation);
+      await traced.built.runtime.observing(conversation);
+      await traced.built.runtime.runTurn(conversation, "scope the onboarding work");
+    } finally {
+      await traced.close();
+    }
 
     const events = readFileSync(join(traceDir, "s-1.jsonl"), "utf8")
       .trim()

@@ -62,7 +62,7 @@ export interface WebhookHandlerOpts {
   /** The single allowed chat id. `undefined` = open to all (PPMA_ALLOW_ANY_CHAT). */
   allowedChatId?: number;
   /** Called for each valid inbound text message. Same contract as TelegramBot.handleMessage(). */
-  handleMessage: (chatId: number, text: string) => Promise<unknown>;
+  handleMessage: (chatId: number, text: string, updateId?: number) => Promise<unknown>;
   /** Called to send a reply (e.g. for non-text message feedback). When absent, non-text messages are silently ignored. */
   sendMessage?: (chatId: number, text: string) => Promise<void>;
   logger: Logger;
@@ -140,7 +140,7 @@ export async function handleWebhookRequest(
   // Respond 200 immediately — Telegram considers non-2xx a delivery failure
   // and retries. The handler is fire-and-forget so the response is instant.
   opts
-    .handleMessage(chatId, text)
+    .handleMessage(chatId, text, update.update_id)
     .catch((err) =>
       opts.logger
         .withError(err)
@@ -166,7 +166,7 @@ export interface TelegramWebhookTransportOptions {
   /** The single allowed chat id. `undefined` = open to all. */
   allowedChatId?: number;
   /** Called for each valid inbound message. */
-  handleMessage: (chatId: number, text: string) => Promise<unknown>;
+  handleMessage: (chatId: number, text: string, updateId?: number) => Promise<unknown>;
   logger?: Logger;
 }
 

@@ -17,7 +17,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { MemoryStorage } from "@earendil-works/pi-durable";
 import { buildAgent } from "../src/agent.ts";
 import { type Config, type Env, loadConfig } from "../src/config.ts";
 import { nullLogger } from "../src/logger.ts";
@@ -97,25 +97,11 @@ export function describeProvider(): string {
   return `${config.provider}/${config.model}`;
 }
 
-/** Concatenated text of the last assistant message in a transcript. */
-function lastAssistantText(messages: AgentMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m && "role" in m && m.role === "assistant" && Array.isArray(m.content)) {
-      return m.content
-        .filter((c): c is { type: "text"; text: string } => c?.type === "text")
-        .map((c) => c.text)
-        .join("");
-    }
-  }
-  return "";
-}
-
 /**
  * Run one eval case against the real, configured model and grade its trace.
  *
  * Mirrors what `TurnRunner.run` records in production (`turn_start` → tool events from
- * `agent.subscribe` → `turn_end`), then hands the same event shape to `analyzeSession` —
+ * the runtime's event stream → `turn_end`), then hands the same event shape to `analyzeSession` —
  * an eval failure here is the identical lint a failing production trace would surface.
  */
 export async function runEvalCase(
@@ -131,9 +117,14 @@ export async function runEvalCase(
 
     const events: TraceEvent[] = [];
     const toolCalls: string[] = [];
-    const { agent } = buildAgent(config, () => project, { logger: nullLogger });
+    // In-memory store: an eval case is one disposable conversation.
+    const { runtime } = await buildAgent(config, () => project, {
+      logger: nullLogger,
+      storage: new MemoryStorage(),
+    });
+    const conversation = await runtime.createConversation();
 
-    const unsubscribe = agent.subscribe((event) => {
+    const unsubscribe = runtime.subscribe(conversation, (event) => {
       if (event.type === "tool_execution_start") {
         toolCalls.push(event.toolName);
         events.push({ ts: Date.now(), type: "tool_start", tool: event.toolName, args: event.args });
@@ -142,16 +133,23 @@ export async function runEvalCase(
           ts: Date.now(),
           type: "tool_end",
           tool: event.toolName,
-          isError: event.isError === true,
+          isError:
+            event.entry === undefined || event.entry.model?.[0]?.role !== "toolResult"
+              ? true
+              : (event.entry.model[0] as { isError?: boolean }).isError === true,
         });
       }
     });
+    await runtime.observing(conversation);
 
     events.push({ ts: Date.now(), type: "turn_start" });
     const startedAt = performance.now();
     let error: unknown;
+    let finalText = "";
     try {
-      await agent.prompt(evalCase.prompt);
+      const outcome = await runtime.runTurn(conversation, evalCase.prompt);
+      finalText = outcome.assistantText;
+      if (outcome.modelError) error = new Error(outcome.modelError);
     } catch (err) {
       error = err;
     }
@@ -162,9 +160,9 @@ export async function runEvalCase(
       ...(error !== undefined ? { error: String(error) } : {}),
     });
     unsubscribe();
+    await runtime.close();
 
     const report = analyzeSession(evalCase.id, events);
-    const finalText = lastAssistantText(agent.state.messages);
     const { pass, reason } = error
       ? { pass: false, reason: `agent turn threw: ${String(error)}` }
       : evalCase.judge(report, toolCalls);

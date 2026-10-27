@@ -3,6 +3,7 @@
  * dependencies live here so it stays trivially unit-testable.
  */
 
+import { dirname, join } from "node:path";
 import { LOG_FORMATS, LOG_LEVELS, type LogFormat, type LogLevel } from "./logger.ts";
 
 /** LLM providers we support. Names match the provider ids pi's getBuiltinModel() expects. */
@@ -113,15 +114,22 @@ export interface Config {
    * operator explicitly opted out via PPMA_ALLOW_ANY_CHAT=true.
    */
   telegramAllowedChatId: number | undefined;
-  /** Path to the durable session file. */
+  /** Path to the session metadata file (name, active project, conversation link). */
   sessionFile: string;
+  /**
+   * SQLite file holding the pi-durable store: every conversation's transcript,
+   * model responses and tool calls, committed before they are acted on. This is
+   * what lets a crashed turn resume. Defaults to `durable.sqlite` beside the
+   * session file (`PPMA_DURABLE_DB`).
+   */
+  durableDbFile: string;
   /**
    * Bucket every session file is mirrored to after it is written locally, so
    * casa can read it. `null` = disabled (default). Set `PPMA_SESSION_BUCKET`.
    */
   sessionBucket: SessionBucketConfig | null;
 
-  /** Token threshold above which the session compacts. 0 = pi defaults. */
+  /** Token threshold above which the conversation compacts. 0 = default (120k). */
   compactionTokenThreshold: number;
 
   /** Minimum log severity emitted (trace|debug|info|warn|error|fatal). */
@@ -383,6 +391,7 @@ function resolveSessionBucket(env: Env): SessionBucketConfig | null {
  */
 export function loadConfig(env: Env = process.env): Config {
   const provider = resolveProvider(env);
+  const sessionFile = optional(env, "PPMA_SESSION_FILE", "./.session/session.json");
   return {
     provider,
     apiKey: OPTIONAL_API_KEY_PROVIDERS.has(provider)
@@ -408,7 +417,8 @@ export function loadConfig(env: Env = process.env): Config {
 
     telegramBotToken: required(env, "PPMA_TELEGRAM_BOT_TOKEN"),
     telegramAllowedChatId: resolveAllowedChatId(env),
-    sessionFile: optional(env, "PPMA_SESSION_FILE", "./.session/session.json"),
+    sessionFile,
+    durableDbFile: optional(env, "PPMA_DURABLE_DB", join(dirname(sessionFile), "durable.sqlite")),
     sessionBucket: resolveSessionBucket(env),
 
     compactionTokenThreshold: int(env, "PPMA_COMPACTION_TOKEN_THRESHOLD", 0),

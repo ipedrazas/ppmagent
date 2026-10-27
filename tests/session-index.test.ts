@@ -161,10 +161,9 @@ describe("SessionIndex — search", () => {
 
   test("filters by minMessages", () => {
     const idx = freshIndex("search-msgs");
-    idx.upsert({ ...newSession("empty"), messages: [] });
+    idx.upsert({ ...newSession("empty"), messageCount: 0 });
     const withMsgs = newSession("has-messages");
-    // Fake a non-empty transcript by setting messageCount indirectly via upsert
-    idx.upsert({ ...withMsgs, messages: [{ role: "user", content: "hi" }] as never[] });
+    idx.upsert({ ...withMsgs, messageCount: 1 });
 
     const results = idx.search({ minMessages: 1 });
     expect(results).toHaveLength(1);

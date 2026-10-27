@@ -1,19 +1,22 @@
 /**
  * Tests for the three resource limit features in TurnRunner:
  *   1. Session cost limit — refuse a turn when accumulated cost exceeds the cap
- *   2. Per-turn tool budget — abort when tool call count exceeds the cap
- *   3. Per-turn cost limit — abort mid-turn when estimated cost exceeds the cap
+ *   2. Per-turn tool budget — block the call and abort when the count exceeds the cap
+ *   3. Per-turn cost limit — abort mid-turn when provider-reported cost exceeds the cap
+ *
+ * Each runs a real TurnRunner over a real durable runtime with a scripted
+ * (faux) model, so "the turn was refused / aborted" is observed as what the
+ * model and tools actually did, not as a mock being called.
  */
-import { describe, expect, test } from "bun:test";
-import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
-import type { Usage } from "@earendil-works/pi-ai";
-import type { BuiltAgent } from "../src/agent.ts";
+import { afterEach, describe, expect, test } from "bun:test";
+import { fauxAssistantMessage, fauxToolCall, type Usage } from "@earendil-works/pi-ai";
 import { MetricsCollector } from "../src/metrics/collector.ts";
 import type { SessionStore } from "../src/session/store.ts";
 import { ChatSession } from "../src/telegram/chat-session.ts";
 import type { TelegramClient } from "../src/telegram/client.ts";
 import { TurnRunner } from "../src/telegram/turn-runner.ts";
 import { makeTestConfig } from "./support/config.ts";
+import { type FauxAgent, fauxToolTurn, makeFauxAgent, scriptedTool } from "./support/faux-agent.ts";
 
 /** Synthetic provider-reported usage carrying a given total cost, for tests. */
 function usageWithCost(totalCostUsd: number, totalTokens = 0): Usage {
@@ -40,92 +43,48 @@ function mockStore(): SessionStore {
   } as unknown as SessionStore;
 }
 
-function mockClient(): { client: TelegramClient; sent: { chatId: number; text: string }[] } {
+const agents: FauxAgent[] = [];
+afterEach(async () => {
+  await Promise.all(agents.splice(0).map((a) => a.close()));
+});
+
+/** A TurnRunner over a faux-model durable runtime whose only tool is a counting `probe`. */
+async function makeTurnRunner(
+  overrides: {
+    metrics?: MetricsCollector;
+    configOverrides?: Parameters<typeof makeTestConfig>[0];
+    /** Price the faux model so turns carry real, derived cost. */
+    cost?: { input: number; output: number };
+  } = {},
+): Promise<{
+  runner: TurnRunner;
+  agent: FauxAgent;
+  sent: { chatId: number; text: string }[];
+  probeCalls: () => number;
+}> {
+  const config = makeTestConfig(overrides.configOverrides);
+  let probes = 0;
+  const agent = await makeFauxAgent(config, {
+    cost: overrides.cost,
+    tools: [
+      scriptedTool("probe", () => {
+        probes++;
+        return { text: `probe #${probes}` };
+      }),
+    ],
+  });
+  agents.push(agent);
+  const session = new ChatSession(config, { store: mockStore() });
+  session.attach(agent.built);
   const sent: { chatId: number; text: string }[] = [];
   const client = {
     sendMessage: async (chatId: number, text: string) => sent.push({ chatId, text }),
     sendChatAction: async () => {},
   } as unknown as TelegramClient;
-  return { client, sent };
-}
-
-type AgentEventListener = (
-  event: { type: string; [k: string]: unknown },
-  signal: AbortSignal,
-) => void;
-
-function makeBuilt(
-  opts: {
-    promptImpl?: () => Promise<void>;
-    onSubscribe?: (listener: AgentEventListener) => void;
-  } = {},
-): {
-  built: BuiltAgent;
-  promptCalled: () => boolean;
-  abortCalled: () => boolean;
-  beforeToolCall: () =>
-    | ((ctx: BeforeToolCallContext, sig?: AbortSignal) => Promise<unknown>)
-    | undefined;
-} {
-  let promptCalled = false;
-  let abortCalled = false;
-  let beforeToolCallFn:
-    | ((ctx: BeforeToolCallContext, sig?: AbortSignal) => Promise<unknown>)
-    | undefined;
-
-  const agent = {
-    state: { messages: [] },
-    get beforeToolCall() {
-      return beforeToolCallFn;
-    },
-    set beforeToolCall(val: typeof beforeToolCallFn) {
-      beforeToolCallFn = val;
-    },
-    abort() {
-      abortCalled = true;
-    },
-    subscribe(listener: AgentEventListener) {
-      opts.onSubscribe?.(listener);
-      return () => {};
-    },
-    async prompt() {
-      promptCalled = true;
-      if (opts.promptImpl) await opts.promptImpl();
-    },
-  };
-
-  const built = {
-    agent,
-    ppm: {},
-    databox: {},
-    proteos: {},
-    memoryContext: { hook: async (m: unknown[]) => m, sliceTokens: () => 0 },
-  } as unknown as BuiltAgent;
-
-  return {
-    built,
-    promptCalled: () => promptCalled,
-    abortCalled: () => abortCalled,
-    beforeToolCall: () => beforeToolCallFn,
-  };
-}
-
-function makeTurnRunner(
-  built: BuiltAgent,
-  overrides: {
-    metrics?: MetricsCollector;
-    configOverrides?: Parameters<typeof makeTestConfig>[0];
-  } = {},
-): { runner: TurnRunner; sent: { chatId: number; text: string }[] } {
-  const config = makeTestConfig(overrides.configOverrides);
-  const store = mockStore();
-  const session = new ChatSession(config, { store });
-  session.attach(built);
-  const { client, sent } = mockClient();
 
   const runner = new TurnRunner({
     session,
-    built,
+    built: agent.built,
     config,
     client,
     send: async (chatId, msgs) => {
@@ -135,8 +94,10 @@ function makeTurnRunner(
     metrics: overrides.metrics,
   });
 
-  return { runner, sent };
+  return { runner, agent, sent, probeCalls: () => probes };
 }
+
+const probeTurn = () => fauxToolTurn(fauxToolCall("probe", {}));
 
 // ── 1. Session cost limit ─────────────────────────────────────────────────────
 
@@ -146,14 +107,14 @@ describe("TurnRunner — session cost limit", () => {
     const metrics = new MetricsCollector();
     metrics.recordUsage(usageWithCost(6, 1_000_000));
 
-    const { built, promptCalled } = makeBuilt();
-    const { runner, sent } = makeTurnRunner(built, {
+    const { runner, agent, sent } = await makeTurnRunner({
       metrics,
       configOverrides: { sessionMaxCostUsd: 5 }, // limit is $5, spent is $6
     });
+    agent.faux.setResponses([fauxAssistantMessage("should not be called")]);
 
     const replies = await runner.run(1, "hello");
-    expect(promptCalled()).toBe(false);
+    expect(agent.faux.state.callCount).toBe(0);
     expect(replies.join(" ")).toMatch(/cost limit/i);
     expect(sent.some((m) => m.text.match(/cost limit/i))).toBe(true);
   });
@@ -162,215 +123,121 @@ describe("TurnRunner — session cost limit", () => {
     const metrics = new MetricsCollector();
     metrics.recordUsage(usageWithCost(0.6, 100_000));
 
-    const { built, promptCalled } = makeBuilt();
-    const { runner } = makeTurnRunner(built, {
+    const { runner, agent } = await makeTurnRunner({
       metrics,
       configOverrides: { sessionMaxCostUsd: 5 }, // limit $5, spent $0.60
     });
+    agent.faux.setResponses([fauxAssistantMessage("fine")]);
 
-    await runner.run(1, "hello");
-    expect(promptCalled()).toBe(true);
+    expect(await runner.run(1, "hello")).toEqual(["fine"]);
+    expect(agent.faux.state.callCount).toBe(1);
   });
 
   test("does not check limit when sessionMaxCostUsd is 0 (unlimited)", async () => {
     const metrics = new MetricsCollector();
     metrics.recordUsage(usageWithCost(60, 10_000_000));
 
-    const { built, promptCalled } = makeBuilt();
-    const { runner } = makeTurnRunner(built, {
+    const { runner, agent } = await makeTurnRunner({
       metrics,
       configOverrides: { sessionMaxCostUsd: 0 },
     });
+    agent.faux.setResponses([fauxAssistantMessage("fine")]);
 
     await runner.run(1, "hello");
-    expect(promptCalled()).toBe(true);
+    expect(agent.faux.state.callCount).toBe(1);
   });
 });
 
 // ── 2. Per-turn tool budget ───────────────────────────────────────────────────
 
 describe("TurnRunner — per-turn tool budget", () => {
-  test("installs beforeToolCall when turnMaxTools > 0", async () => {
-    let capturedBeforeToolCall:
-      | ((ctx: BeforeToolCallContext, sig?: AbortSignal) => Promise<unknown>)
-      | undefined;
-
-    const { built } = makeBuilt({
-      promptImpl: async () => {
-        // Capture whatever beforeToolCall was set to during the turn
-        capturedBeforeToolCall = built.agent.beforeToolCall as typeof capturedBeforeToolCall;
-      },
-    });
-
-    const { runner } = makeTurnRunner(built, {
-      configOverrides: { turnMaxTools: 5 },
-    });
-
-    await runner.run(1, "hello");
-    expect(capturedBeforeToolCall).toBeTypeOf("function");
-  });
-
-  test("restores beforeToolCall to undefined after the turn", async () => {
-    const { built } = makeBuilt();
-    const { runner } = makeTurnRunner(built, {
-      configOverrides: { turnMaxTools: 3 },
-    });
-
-    await runner.run(1, "hello");
-    // afterthe turn, the original (undefined) should be restored
-    expect(built.agent.beforeToolCall).toBeUndefined();
-  });
-
-  test("beforeToolCall allows calls within budget", async () => {
-    let capturedBeforeToolCall:
-      | ((ctx: BeforeToolCallContext, sig?: AbortSignal) => Promise<unknown>)
-      | undefined;
-
-    const { built } = makeBuilt({
-      promptImpl: async () => {
-        capturedBeforeToolCall = built.agent.beforeToolCall as typeof capturedBeforeToolCall;
-      },
-    });
-
-    const { runner } = makeTurnRunner(built, {
-      configOverrides: { turnMaxTools: 3 },
-    });
-
-    await runner.run(1, "hello");
-
-    // First 3 calls should be allowed (return undefined = proceed)
-    const ctx = {} as BeforeToolCallContext;
-    if (!capturedBeforeToolCall) throw new Error("beforeToolCall was not captured");
-    expect(await capturedBeforeToolCall(ctx)).toBeUndefined();
-    expect(await capturedBeforeToolCall(ctx)).toBeUndefined();
-    expect(await capturedBeforeToolCall(ctx)).toBeUndefined();
-  });
-
-  test("beforeToolCall blocks and aborts on the (budget+1)-th call", async () => {
-    let capturedBeforeToolCall:
-      | ((ctx: BeforeToolCallContext, sig?: AbortSignal) => Promise<unknown>)
-      | undefined;
-    let abortedFromGuard = false;
-
-    const { built } = makeBuilt({
-      promptImpl: async () => {
-        capturedBeforeToolCall = built.agent.beforeToolCall as typeof capturedBeforeToolCall;
-        // Override abort to track the call
-        built.agent.abort = () => {
-          abortedFromGuard = true;
-        };
-      },
-    });
-
-    const { runner } = makeTurnRunner(built, {
+  test("calls within the budget run; the (budget+1)-th is blocked and ends the turn", async () => {
+    const { runner, agent, probeCalls } = await makeTurnRunner({
       configOverrides: { turnMaxTools: 2 },
     });
+    // The model would happily keep calling tools forever.
+    agent.faux.setResponses([
+      probeTurn(),
+      probeTurn(),
+      probeTurn(),
+      probeTurn(),
+      fauxAssistantMessage("never reached"),
+    ]);
 
-    await runner.run(1, "hello");
+    const replies = await runner.run(1, "hello");
 
-    const ctx = {} as BeforeToolCallContext;
-    if (!capturedBeforeToolCall) throw new Error("beforeToolCall was not captured");
-    // First 2 allowed
-    await capturedBeforeToolCall(ctx);
-    await capturedBeforeToolCall(ctx);
-    // 3rd call exceeds budget
-    const result = (await capturedBeforeToolCall(ctx)) as { block?: boolean; reason?: string };
-    expect(result?.block).toBe(true);
-    expect(result?.reason).toMatch(/budget/i);
-    expect(abortedFromGuard).toBe(true);
+    expect(probeCalls()).toBe(2); // the 3rd was blocked, the turn aborted
+    expect(replies.join(" ")).not.toContain("never reached");
+    expect(agent.faux.state.callCount).toBeLessThan(5);
   });
 
-  test("does not install beforeToolCall when turnMaxTools is 0 (unlimited)", async () => {
-    let beforeToolCallDuringTurn: unknown;
-
-    const { built } = makeBuilt({
-      promptImpl: async () => {
-        beforeToolCallDuringTurn = built.agent.beforeToolCall;
-      },
+  test("the budget is per turn: the next turn starts from zero", async () => {
+    const { runner, agent, probeCalls } = await makeTurnRunner({
+      configOverrides: { turnMaxTools: 2 },
     });
+    agent.faux.setResponses([probeTurn(), probeTurn(), fauxAssistantMessage("first done")]);
+    expect(await runner.run(1, "one")).toEqual(["first done"]);
 
-    const { runner } = makeTurnRunner(built, {
+    agent.faux.setResponses([probeTurn(), probeTurn(), fauxAssistantMessage("second done")]);
+    expect(await runner.run(1, "two")).toEqual(["second done"]);
+    expect(probeCalls()).toBe(4);
+  });
+
+  test("no budget is enforced when turnMaxTools is 0 (unlimited)", async () => {
+    const { runner, agent, probeCalls } = await makeTurnRunner({
       configOverrides: { turnMaxTools: 0 },
     });
+    agent.faux.setResponses([
+      probeTurn(),
+      probeTurn(),
+      probeTurn(),
+      probeTurn(),
+      fauxAssistantMessage("done"),
+    ]);
 
-    await runner.run(1, "hello");
-    expect(beforeToolCallDuringTurn).toBeUndefined();
+    expect(await runner.run(1, "hello")).toEqual(["done"]);
+    expect(probeCalls()).toBe(4);
   });
 });
 
 // ── 3. Per-turn cost limit ────────────────────────────────────────────────────
 
 describe("TurnRunner — per-turn cost limit", () => {
-  test("subscribes a turn_end listener when turnMaxCostUsd > 0", async () => {
-    let subscribeCallCount = 0;
+  // $1000 per million tokens: any turn costs far more than the tiny limits below.
+  const pricey = { input: 1000, output: 1000 };
 
-    const { built } = makeBuilt({
-      onSubscribe: () => {
-        subscribeCallCount++;
-      },
-    });
-
-    const { runner } = makeTurnRunner(built, {
-      configOverrides: { turnMaxCostUsd: 0.5 },
-    });
-
-    await runner.run(1, "hello");
-    // At minimum 2 subscriptions: terminating-tool listener + cost-limit listener
-    expect(subscribeCallCount).toBeGreaterThanOrEqual(2);
-  });
-
-  test("does not subscribe a cost listener when turnMaxCostUsd is 0 (unlimited)", async () => {
-    let subscribeCallCount = 0;
-    const { built } = makeBuilt({
-      onSubscribe: () => {
-        subscribeCallCount++;
-      },
-    });
-
-    const { runner } = makeTurnRunner(built, {
-      configOverrides: { turnMaxCostUsd: 0 },
-    });
-
-    await runner.run(1, "hello");
-    // Only the terminating-tool listener; no cost listener
-    expect(subscribeCallCount).toBe(1);
-  });
-
-  test("aborts agent when turn_end event pushes cost over limit", async () => {
-    const listeners: AgentEventListener[] = [];
-    let abortCalled = false;
-
-    const { built } = makeBuilt({
-      onSubscribe: (listener) => {
-        listeners.push(listener);
-      },
-    });
-
-    // Override abort on the already-created agent
-    built.agent.abort = () => {
-      abortCalled = true;
-    };
-
-    const { runner } = makeTurnRunner(built, {
+  test("aborts the turn once provider-reported cost goes over the limit", async () => {
+    const { runner, agent, probeCalls } = await makeTurnRunner({
+      cost: pricey,
       configOverrides: { turnMaxCostUsd: 0.001 }, // very low limit
     });
+    agent.faux.setResponses([probeTurn(), fauxAssistantMessage("never reached")]);
 
-    const runPromise = runner.run(1, "hi");
+    const replies = await runner.run(1, "hi");
 
-    // Fire a turn_end event carrying provider-reported cost above the limit.
-    const sig = new AbortController().signal;
-    for (const l of listeners) {
-      l(
-        {
-          type: "turn_end",
-          message: { role: "assistant", usage: { cost: { total: 0.03 } } },
-          toolResults: [],
-        },
-        sig,
-      );
-    }
+    expect(replies.join(" ")).toMatch(/Per-turn cost limit/);
+    expect(replies.join(" ")).not.toContain("never reached");
+    expect(agent.faux.state.callCount).toBe(1);
+    expect(probeCalls()).toBeLessThanOrEqual(1);
+  });
 
-    await runPromise;
-    expect(abortCalled).toBe(true);
+  test("a turn under the limit completes normally", async () => {
+    const { runner, agent } = await makeTurnRunner({
+      cost: pricey,
+      configOverrides: { turnMaxCostUsd: 5 },
+    });
+    agent.faux.setResponses([probeTurn(), fauxAssistantMessage("all good")]);
+
+    expect(await runner.run(1, "hi")).toEqual(["all good"]);
+  });
+
+  test("no limit is enforced when turnMaxCostUsd is 0 (unlimited)", async () => {
+    const { runner, agent } = await makeTurnRunner({
+      cost: pricey,
+      configOverrides: { turnMaxCostUsd: 0 },
+    });
+    agent.faux.setResponses([probeTurn(), fauxAssistantMessage("all good")]);
+
+    expect(await runner.run(1, "hi")).toEqual(["all good"]);
   });
 });

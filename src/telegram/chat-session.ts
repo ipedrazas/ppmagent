@@ -1,28 +1,23 @@
 /**
- * Per-chat session state: the durable {@link SessionState} (transcript + active
- * project + name) plus the operations that read or mutate it — persistence,
- * session switching (`/new`, `/resume`), compaction, and the `/context` and
- * `/session` reports.
+ * Per-chat session state: the persisted {@link SessionState} (active project,
+ * name, link to the session's durable conversation) plus the operations that
+ * read or mutate it — persistence, session switching (`/new`, `/resume`),
+ * compaction, and the `/context` and `/session` reports. The transcript itself
+ * lives in the pi-durable store and is reached through the runtime.
  *
  * Extracted from {@link TelegramBot} so the transport layer no longer owns
  * session state. Crucially, a ChatSession is constructed *before* the agent:
  * `activeProject` has no dependency on the agent, so the memory-injection seam
  * can read it via `() => session.activeProject` with no mutable holder. The
- * agent's transcript is bound afterwards with {@link attach}.
+ * runtime is bound afterwards with {@link attach}.
  */
+import type { Message } from "@earendil-works/pi-ai";
 import type { BuiltAgent } from "../agent.ts";
-import {
-  type CompactionOutcome,
-  contextTokens,
-  DEFAULT_KEEP_RECENT,
-  maybeCompact,
-  placeholderSummarizer,
-  resolveThreshold,
-  type Summarizer,
-} from "../compaction.ts";
+import { resolveThreshold } from "../compaction.ts";
 import type { Config } from "../config.ts";
 import type { Logger } from "../logger.ts";
 import type { MetricsCollector } from "../metrics/collector.ts";
+import type { ConversationKey } from "../runtime/runtime.ts";
 import type { SessionIndex } from "../session/session-index.ts";
 import { newSession, type SessionState, type SessionStore, shortId } from "../session/store.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
@@ -43,8 +38,6 @@ function sessionLabel(s: {
 
 export interface ChatSessionDeps {
   store: SessionStore;
-  /** Transcript summarizer used at compaction. Defaults to the model-free one. */
-  summarize?: Summarizer;
   /** Session trace sink (compaction events). Absent = no tracing. */
   recorder?: TraceRecorder;
   /** Live metrics collector; compaction token counts are recorded when present. */
@@ -57,32 +50,24 @@ export interface ChatSessionDeps {
 
 export class ChatSession {
   private state: SessionState;
-  /** Bound in {@link attach}; every transcript operation goes through the agent. */
+  /** Bound in {@link attach}; every transcript operation goes through the runtime. */
   private built!: BuiltAgent;
-  /** Model-free until {@link attach} supplies the production summarizer. */
-  private summarize: Summarizer;
 
   constructor(
     private readonly config: Config,
     private readonly deps: ChatSessionDeps,
   ) {
-    this.summarize = deps.summarize ?? placeholderSummarizer;
-    // Restore the durable session (or start fresh).
+    // Restore the persisted session (or start fresh).
     this.state = deps.store.load() ?? newSession();
     deps.recorder?.setSession(this.state.sessionId);
   }
 
   /**
-   * Bind the built agent (and its model-backed summarizer) and point the agent's
-   * transcript at this session's messages. Called once, after `buildAgent`, to
-   * complete the wiring the old mutable holder used to provide. The summarizer is
-   * injected here because it depends on the built model, which does not exist at
-   * construction time.
+   * Bind the built agent. Called once, after `buildAgent`, to complete the wiring
+   * the old mutable holder used to provide.
    */
-  attach(built: BuiltAgent, summarize?: Summarizer): void {
+  attach(built: BuiltAgent): void {
     this.built = built;
-    if (summarize) this.summarize = summarize;
-    this.built.agent.state.messages = this.state.messages;
   }
 
   // ── State accessors ──
@@ -114,26 +99,56 @@ export class ChatSession {
     this.state.describeEnabled = value;
   }
 
-  /** The live transcript (the agent's message array). */
-  get messages() {
-    return this.built.agent.state.messages;
+  /** The session's durable conversation id, if it has been used yet. */
+  get conversationId(): ConversationKey | undefined {
+    return this.state.conversationId;
+  }
+
+  /**
+   * The session's durable conversation, created on first use (and re-created if
+   * the durable store no longer has it, e.g. after its file was reset).
+   */
+  async ensureConversation(): Promise<ConversationKey> {
+    const { runtime, observe } = this.built;
+    let id = this.state.conversationId;
+    if (id === undefined || !(await runtime.hasConversation(id))) {
+      id = await runtime.createConversation();
+      this.state.conversationId = id;
+      this.state.messageCount = 0;
+    }
+    observe(id);
+    return id;
+  }
+
+  /** The stored transcript (system prompt excluded); empty before the first turn. */
+  async messages(): Promise<Message[]> {
+    const id = this.state.conversationId;
+    if (id === undefined || !(await this.built.runtime.hasConversation(id))) return [];
+    this.built.observe(id);
+    return this.built.runtime.messages(id);
   }
 
   // ── Persistence & switching ──
 
+  /** Write the session metadata (and refresh the search index). */
   persist(): void {
-    this.state.messages = this.built.agent.state.messages;
     this.deps.store.save(this.state);
     this.deps.index?.upsert(this.state);
   }
 
+  /** Re-read the transcript into the persisted listing count and export snapshot. */
+  async refreshMessageCount(): Promise<void> {
+    const messages = await this.messages();
+    this.state.messageCount = messages.length;
+    this.state.messages = messages;
+  }
+
   /**
-   * Make `state` the live session: swap it in and point the agent's transcript
-   * at its messages. Used by `/new` and `/resume`. The caller persists after.
+   * Make `state` the live session. Used by `/new` and `/resume`. The caller
+   * persists after.
    */
   switchTo(state: SessionState): void {
     this.state = state;
-    this.built.agent.state.messages = state.messages;
     this.deps.recorder?.setSession(state.sessionId);
   }
 
@@ -144,7 +159,7 @@ export class ChatSession {
    */
   startNew(name?: string): SessionState {
     // Don't persist an untouched throwaway session; keep the store tidy.
-    if (this.messages.length > 0) this.persist();
+    if (this.state.conversationId !== undefined) this.persist();
     const fresh = newSession(name);
     fresh.activeProject = this.state.activeProject;
     this.switchTo(fresh);
@@ -155,50 +170,57 @@ export class ChatSession {
   // ── Compaction ──
 
   /**
-   * Compact the live transcript when it crosses `threshold` tokens, flushing
-   * the generated summary to memory as a durable checkpoint, and assign the
-   * result back to the agent. Shared by the post-turn auto-compaction and the
-   * manual `/compact` command (which forces an attempt by passing a threshold
-   * of 1).
+   * Compact the transcript now (`/compact`). Automatic compaction runs inside
+   * the durable runtime when the context nears the configured threshold; the
+   * summary is flushed to project memory by the conversation observer.
    */
-  async compact(threshold: number): Promise<CompactionOutcome> {
-    const outcome = await maybeCompact({
-      messages: this.built.agent.state.messages,
-      policy: { threshold, keepRecent: DEFAULT_KEEP_RECENT },
-      summarize: this.summarize,
-      flush: async (summary) => {
-        if (this.state.activeProject) {
-          await this.built.ppm.write([
-            "conversation",
-            "add",
-            this.state.activeProject,
-            "--content",
-            `Compaction checkpoint.\n\n${summary}`,
-          ]);
-        }
-      },
-      extraTokens: this.built.memoryContext.sliceTokens(),
-    });
-    if (outcome.compacted) {
-      this.built.agent.state.messages = outcome.messages;
+  async compact(): Promise<{
+    compacted: boolean;
+    tokensBefore: number;
+    tokensAfter: number;
+    messagesBefore: number;
+    messagesAfter: number;
+  }> {
+    const id = this.state.conversationId;
+    const { runtime } = this.built;
+    if (id === undefined || !(await runtime.hasConversation(id))) {
+      return {
+        compacted: false,
+        tokensBefore: 0,
+        tokensAfter: 0,
+        messagesBefore: 0,
+        messagesAfter: 0,
+      };
+    }
+    this.built.observe(id);
+    const extra = this.built.memoryContext.sliceTokens();
+    const messagesBefore = (await runtime.messages(id)).length;
+    const tokensBefore = (await runtime.contextTokens(id)) + extra;
+    const { compacted } = await runtime.compact(id);
+    const messagesAfter = (await runtime.messages(id)).length;
+    const tokensAfter = (await runtime.contextTokens(id)) + extra;
+    if (compacted) {
       this.deps.recorder?.record({
         type: "compaction",
-        tokensBefore: outcome.tokensBefore,
-        tokensAfter: outcome.tokensAfter,
-        messagesAfter: outcome.messages.length,
-        threshold,
+        tokensBefore,
+        tokensAfter,
+        messagesAfter,
+        threshold: resolveThreshold(this.config.compactionTokenThreshold),
       });
-      this.deps.metrics?.recordCompaction(outcome.tokensBefore, outcome.tokensAfter);
+      this.deps.metrics?.recordCompaction(tokensBefore, tokensAfter);
     }
-    return outcome;
+    return { compacted, tokensBefore, tokensAfter, messagesBefore, messagesAfter };
   }
 
   // ── Reports ──
 
   /** Human-readable snapshot of context usage vs. the compaction threshold. */
-  contextReport(): string {
-    const messages = this.built.agent.state.messages;
-    const used = contextTokens(messages) + this.built.memoryContext.sliceTokens();
+  async contextReport(): Promise<string> {
+    const id = this.state.conversationId;
+    const messages = await this.messages();
+    const stored =
+      id === undefined || messages.length === 0 ? 0 : await this.built.runtime.contextTokens(id);
+    const used = stored + this.built.memoryContext.sliceTokens();
     const threshold = resolveThreshold(this.config.compactionTokenThreshold);
     const pct = Math.round((used / threshold) * 100);
     return (
@@ -208,13 +230,13 @@ export class ChatSession {
   }
 
   /** Details of the current session, plus a count of others on disk. */
-  sessionReport(): string {
+  async sessionReport(): Promise<string> {
     const s = this.state;
     const others = this.deps.store.list().filter((x) => x.sessionId !== s.sessionId).length;
     const lines = [
       `Session ${shortId(s.sessionId)}${s.name ? ` "${s.name}"` : ""}`,
       `Project: ${s.activeProject ?? "(none)"}`,
-      `Messages: ${this.built.agent.state.messages.length}`,
+      `Messages: ${(await this.messages()).length}`,
     ];
     if (others > 0)
       lines.push(`${others} other session${others === 1 ? "" : "s"} — /resume to list.`);
@@ -238,9 +260,9 @@ export class ChatSession {
     const target = this.deps.store.find(arg);
     if (!target) return `No session matches "${arg}".`;
     if (target.sessionId === this.state.sessionId) return "That session is already active.";
-    if (this.messages.length > 0) this.persist();
+    if (this.state.conversationId !== undefined) this.persist();
     this.switchTo(target);
     this.persist();
-    return `Resumed session ${shortId(target.sessionId)}${target.name ? ` "${target.name}"` : ""} (${target.messages.length} messages).`;
+    return `Resumed session ${shortId(target.sessionId)}${target.name ? ` "${target.name}"` : ""} (${target.messageCount} messages).`;
   }
 }

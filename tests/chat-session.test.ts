@@ -1,9 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { BuiltAgent } from "../src/agent.ts";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { SessionState, SessionStore } from "../src/session/store.ts";
 import { ChatSession } from "../src/telegram/chat-session.ts";
 import { makeTestConfig } from "./support/config.ts";
+import { type FauxAgent, makeFauxAgent } from "./support/faux-agent.ts";
 
 /** In-memory SessionStore: enough of the surface ChatSession touches. */
 function memStore(seed?: SessionState): { store: SessionStore; saved: SessionState[] } {
@@ -15,20 +14,17 @@ function memStore(seed?: SessionState): { store: SessionStore; saved: SessionSta
       current = s;
       saved.push(structuredClone(s));
     },
-    list: () => (current ? [{ ...current, messageCount: current.messages.length }] : []),
+    list: () => (current ? [{ ...current }] : []),
     find: () => undefined,
   } as unknown as SessionStore;
   return { store, saved };
 }
 
-/** A fake BuiltAgent whose transcript is a plain array. */
-function fakeBuilt(): BuiltAgent {
-  return {
-    agent: { state: { messages: [] as AgentMessage[] } },
-    ppm: { write: async () => ({}) },
-    memoryContext: { hook: async (m: AgentMessage[]) => m, sliceTokens: () => 0 },
-  } as unknown as BuiltAgent;
-}
+let agent: FauxAgent | undefined;
+afterEach(async () => {
+  await agent?.close();
+  agent = undefined;
+});
 
 describe("ChatSession — holder-fix seam", () => {
   test("activeProject is readable and settable BEFORE attach (no agent needed)", () => {
@@ -41,52 +37,71 @@ describe("ChatSession — holder-fix seam", () => {
     expect(session.activeProject).toBe("onboarding");
   });
 
-  test("attach points the agent transcript at the session's messages", () => {
+  test("a session has no durable conversation until first use", async () => {
+    const { store } = memStore();
+    const session = new ChatSession(makeTestConfig(), { store });
+    agent = await makeFauxAgent(makeTestConfig());
+    session.attach(agent.built);
+    expect(session.conversationId).toBeUndefined();
+    expect(await session.messages()).toEqual([]);
+
+    const id = await session.ensureConversation();
+    expect(session.conversationId).toBe(id);
+    // Idempotent: the same conversation is reused.
+    expect(await session.ensureConversation()).toBe(id);
+  });
+
+  test("a persisted conversation id the store no longer knows is replaced", async () => {
     const seed: SessionState = {
       sessionId: "s-1",
-      messages: [{ role: "user", content: "hi", timestamp: 1 }] as AgentMessage[],
+      conversationId: 9999,
+      messages: [],
+      messageCount: 4,
       createdAt: 1,
       updatedAt: 1,
     };
     const { store } = memStore(seed);
     const session = new ChatSession(makeTestConfig(), { store });
-    const built = fakeBuilt();
-    session.attach(built);
-    expect(built.agent.state.messages).toBe(seed.messages);
-    expect(session.messages).toHaveLength(1);
+    agent = await makeFauxAgent(makeTestConfig());
+    session.attach(agent.built);
+    const id = await session.ensureConversation();
+    expect(id).not.toBe(9999);
   });
 });
 
 describe("ChatSession — session lifecycle", () => {
-  test("startNew carries the active project forward and clears the transcript", () => {
+  test("startNew carries the active project forward and starts without a conversation", async () => {
     const { store, saved } = memStore();
     const session = new ChatSession(makeTestConfig(), { store });
-    const built = fakeBuilt();
-    session.attach(built);
+    agent = await makeFauxAgent(makeTestConfig());
+    session.attach(agent.built);
     session.activeProject = "onboarding";
-    built.agent.state.messages.push({ role: "user", content: "old", timestamp: 1 } as AgentMessage);
+    const old = await session.ensureConversation();
 
     const fresh = session.startNew("review");
 
     expect(fresh.name).toBe("review");
     expect(session.activeProject).toBe("onboarding"); // carried forward
-    expect(session.messages).toHaveLength(0); // transcript cleared
+    expect(session.conversationId).toBeUndefined(); // fresh transcript
     expect(saved.at(-1)?.sessionId).toBe(fresh.sessionId); // persisted
+    expect(saved.some((s) => s.conversationId === old)).toBe(true); // outgoing session kept its link
   });
 
-  test("name get/set round-trips and persists via /name usage", () => {
+  test("name get/set round-trips and persists via /name usage", async () => {
     const { store } = memStore();
     const session = new ChatSession(makeTestConfig(), { store });
-    session.attach(fakeBuilt());
+    agent = await makeFauxAgent(makeTestConfig());
+    session.attach(agent.built);
     session.name = "metrics-review";
     session.persist();
     expect(session.name).toBe("metrics-review");
   });
 
-  test("resume with no argument lists saved sessions", () => {
+  test("resume with no argument lists saved sessions", async () => {
     const { store } = memStore();
     const session = new ChatSession(makeTestConfig(), { store });
-    session.attach(fakeBuilt());
+    agent = await makeFauxAgent(makeTestConfig());
+    session.attach(agent.built);
     expect(session.resume("")).toContain("No saved sessions yet.");
   });
 });
