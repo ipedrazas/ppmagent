@@ -91,7 +91,9 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
       title: Type.String(),
       description: Type.String(),
       project_id: Type.Optional(Type.String()),
-      assignee_id: Type.Optional(Type.String()),
+      assignee_id: Type.Optional(
+        Type.String({ description: "Assignee user UUID. Omit unless reassigning; never send ''." }),
+      ),
       label_ids: Type.Optional(Type.Array(Type.String())),
       priority: Type.Optional(Type.Integer({ minimum: 0, maximum: 4 })),
     }),
@@ -129,14 +131,17 @@ export function buildTrackerTools(databox: DataboxClient, opts?: TrackerToolsOpt
   const updateTask = defineTool({
     name: "tracker_update_task",
     description:
-      "Update a task by its reference (e.g. ENG-123). Only the fields you pass change. Move it to a workflow state (status, e.g. Todo, In Progress, Done), file it under a project (project_id), reassign (assignee_id), replace labels (label_ids), or set priority (0 none, 1 urgent, 2 high, 3 medium, 4 low).",
+      "Update a task by its reference (e.g. ENG-123). Only the fields you pass change. To move it to a different workflow state (Todo, In Progress, Done, Canceled, ...) pass `status`; this is the ONLY way to change a task's state. Also: file it under a project (project_id), reassign (assignee_id), replace labels (label_ids), or set priority (0 none, 1 urgent, 2 high, 3 medium, 4 low).",
     label: "Update task",
     parameters: Type.Object({
       ref: Type.String(),
       title: Type.Optional(Type.String()),
       description: Type.Optional(Type.String()),
       status: Type.Optional(
-        Type.String({ description: "workflow state name, e.g. Todo, In Progress, Done" }),
+        Type.String({
+          description:
+            "Linear workflow state to move the task to, by name: Backlog, Todo, In Progress, In Review, Done or Canceled (as defined in the team's workflow). Sent to the tracker as `status`.",
+        }),
       ),
       project_id: Type.Optional(Type.String()),
       assignee_id: Type.Optional(Type.String()),

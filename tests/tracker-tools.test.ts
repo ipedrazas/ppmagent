@@ -202,3 +202,90 @@ describe("tracker_get_project name resolution", () => {
     expect(String(err)).toMatch(/no project found/i);
   });
 });
+
+/**
+ * Fake `dbxcli` that exposes an `update_issue` action and records the argv of
+ * every `action invoke` into `$DBX_LOG`, so tests can assert exactly what would
+ * reach the Linear mutation.
+ */
+const FAKE_DBXCLI_UPDATE = `#!/usr/bin/env bash
+shift 2
+cmd="$1"
+case "$cmd" in
+  datasets)
+    echo '{"datasets":[{"alias":"issues","data_kind":"issues"}]}'
+    ;;
+  action)
+    if [ "$2" = "invoke" ]; then
+      echo "$@" >> "$DBX_LOG"
+      echo '{"result":{"identifier":"TAV-229","issue_id":"i1","url":"https://x/issue/TAV-229/s"}}'
+    else
+      echo '{"items":[{"alias":"upd","action_type":"update_issue"}]}'
+    fi
+    ;;
+esac
+exit 0
+`;
+
+describe("tracker_update_task status (TAV-229)", () => {
+  let dir: string;
+  let bin: string;
+  let log: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "dbxcli-upd-test-"));
+    bin = join(dir, "dbxcli");
+    log = join(dir, "invoke.log");
+    await writeFile(bin, FAKE_DBXCLI_UPDATE);
+    await chmod(bin, 0o755);
+    process.env.DBX_LOG = log;
+  });
+
+  afterAll(async () => {
+    delete process.env.DBX_LOG;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function updateTool() {
+    const client = new DataboxClient({ bin, config: "" });
+    const tool = buildTrackerTools(client).find((t) => t.name === "tracker_update_task");
+    if (!tool) throw new Error("tracker_update_task not found");
+    return tool;
+  }
+
+  async function lastInvokeParams(): Promise<Record<string, unknown>> {
+    const lines = (await Bun.file(log).text()).trim().split("\n");
+    const line = lines[lines.length - 1] ?? "";
+    return JSON.parse(line.slice(line.indexOf("--params") + "--params ".length));
+  }
+
+  test("model-visible schema declares status as the Linear workflow state", () => {
+    const schema = updateTool().parameters as {
+      properties: Record<string, { type: string; description?: string }>;
+    };
+    expect(schema.properties.status?.type).toBe("string");
+    expect(schema.properties.status?.description).toMatch(/workflow state/i);
+    expect(schema.properties.status?.description).toMatch(/In Progress/);
+    expect(updateTool().description).toContain("`status`");
+  });
+
+  test("a status argument reaches the update_issue mutation", async () => {
+    await updateTool().execute("c1", { ref: "TAV-229", status: "In Progress" });
+    expect(await lastInvokeParams()).toEqual({ issue_id: "TAV-229", status: "In Progress" });
+  });
+
+  test("status survives alongside priority and an empty assignee_id", async () => {
+    await updateTool().execute("c2", {
+      ref: "TAV-229",
+      priority: 2,
+      assignee_id: "",
+      status: "Done",
+    });
+    expect(await lastInvokeParams()).toEqual({ issue_id: "TAV-229", priority: 2, status: "Done" });
+  });
+
+  test("priority still works without a status", async () => {
+    await updateTool().execute("c3", { ref: "TAV-229", priority: 1 });
+    expect(await lastInvokeParams()).toEqual({ issue_id: "TAV-229", priority: 1 });
+  });
+});
