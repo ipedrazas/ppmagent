@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { SessionStore } from "../src/session/store.ts";
+import { UserPrefs } from "../src/session/user-prefs.ts";
 import { TelegramBot } from "../src/telegram/bot.ts";
 import { ChatSession } from "../src/telegram/chat-session.ts";
 import type { TelegramClient } from "../src/telegram/client.ts";
@@ -29,6 +30,7 @@ async function runWithTool(
   showToolCalls: boolean,
   tool: AppTool,
   args: Record<string, string | number>,
+  opts: { userPrefs?: UserPrefs; userId?: number; text?: string } = {},
 ): Promise<Array<{ chatId: number; text: string }>> {
   const sent: Array<{ chatId: number; text: string }> = [];
   let callCount = 0;
@@ -36,7 +38,10 @@ async function runWithTool(
   const client = {
     getUpdates: async () => {
       callCount++;
-      if (callCount === 1) return [{ updateId: 1, message: { chatId: 5, text: "hi" } }];
+      if (callCount === 1)
+        return [
+          { updateId: 1, message: { chatId: 5, userId: opts.userId, text: opts.text ?? "hi" } },
+        ];
       ctx.stop();
       return [];
     },
@@ -56,7 +61,11 @@ async function runWithTool(
   const store = mockStore();
   const session = new ChatSession(config, { store });
   session.attach(agent.built);
-  const bot = new TelegramBot(config, agent.built, session, { client, store });
+  const bot = new TelegramBot(config, agent.built, session, {
+    client,
+    store,
+    userPrefs: opts.userPrefs,
+  });
   ctx.stop = () => bot.stop();
   await bot.start();
   return sent;
@@ -100,5 +109,33 @@ describe("PPMA_SHOW_TOOL_CALLS", () => {
 
     const endMsg = sent.find((m) => m.chatId === 5 && m.text.includes("boom"));
     expect(endMsg?.text).toContain("failed");
+  });
+});
+
+describe("/verbose overrides PPMA_SHOW_TOOL_CALLS at the display path", () => {
+  const tool = () => scriptedTool("some_tool", () => ({ text: "ok" }));
+
+  test("stored off suppresses tool calls even with the env var true", async () => {
+    const userPrefs = new UserPrefs();
+    userPrefs.setShowToolCalls(7, false);
+    const sent = await runWithTool(true, tool(), { a: 1 }, { userPrefs, userId: 7 });
+    expect(sent.some((m) => m.text.includes("some_tool"))).toBe(false);
+    expect(sent.some((m) => m.text === "all done")).toBe(true);
+  });
+
+  test("stored on shows tool calls even with the env var false", async () => {
+    const userPrefs = new UserPrefs();
+    userPrefs.setShowToolCalls(7, true);
+    const sent = await runWithTool(false, tool(), { a: 1 }, { userPrefs, userId: 7 });
+    expect(sent.some((m) => m.text.includes("some_tool"))).toBe(true);
+  });
+
+  test("another user's preference does not apply; no preference follows the env var", async () => {
+    const userPrefs = new UserPrefs();
+    userPrefs.setShowToolCalls(8, true);
+    const off = await runWithTool(false, tool(), { a: 1 }, { userPrefs, userId: 7 });
+    expect(off.some((m) => m.text.includes("some_tool"))).toBe(false);
+    const on = await runWithTool(true, tool(), { a: 1 }, { userPrefs, userId: 7 });
+    expect(on.some((m) => m.text.includes("some_tool"))).toBe(true);
   });
 });

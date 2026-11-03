@@ -70,6 +70,14 @@ export const COMMANDS: CommandSpec[] = [
     example: "/describe on",
   },
   {
+    name: "verbose",
+    usage: "/verbose [on|off|default]",
+    summary: "show or hide tool-call messages",
+    details:
+      "Controls whether each tool call and its result is posted to the chat as the turn progresses. Per-user: applies to all your chats and survives restarts. With no argument it reports the current setting and whether it is the deployment default (PPMA_SHOW_TOOL_CALLS) or your own choice; 'default' clears your choice. Takes effect on the next turn.",
+    example: "/verbose on",
+  },
+  {
     name: "tools",
     usage: "/tools",
     summary: "report CLI tool versions",

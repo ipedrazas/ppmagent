@@ -17,6 +17,7 @@ import type { Config } from "../config.ts";
 import { type Logger, nullLogger } from "../logger.ts";
 import type { MetricsCollector } from "../metrics/collector.ts";
 import { messageText, type PendingTurn, type TurnOutcome } from "../runtime/runtime.ts";
+import { resolveShowToolCalls, type UserPrefs } from "../session/user-prefs.ts";
 import { type ConfirmationStore, isApproval, isRejection } from "../tools/confirmation.ts";
 import { clipPayload, type TraceRecorder } from "../trace/recorder.ts";
 import type { ChatSession } from "./chat-session.ts";
@@ -65,6 +66,8 @@ export interface TurnRunnerDeps {
   recorder?: TraceRecorder;
   /** Live metrics collector for turn duration and token usage. */
   metrics?: MetricsCollector;
+  /** Per-user `/verbose` preferences; absent = always use `PPMA_SHOW_TOOL_CALLS`. */
+  userPrefs?: UserPrefs;
   logger?: Logger;
 }
 
@@ -89,7 +92,12 @@ export class TurnRunner {
    * Handle one inbound message as an agent turn (or as a reply to a pending
    * confirmation). Returns the replies sent.
    */
-  async run(chatId: number, text: string, updateId?: number): Promise<string[]> {
+  async run(
+    chatId: number,
+    text: string,
+    updateId?: number,
+    userId: number = chatId,
+  ): Promise<string[]> {
     const { session, confirmationStore, recorder } = this.deps;
     const trimmed = text.trim();
     const turnLog = this.log.withContext({ chatId, project: session.activeProject });
@@ -174,7 +182,8 @@ export class TurnRunner {
           turnLog.withError(error).warn("failed to send tool-status message");
         });
     };
-    const unsubscribeToolStatus = this.deps.config.showToolCalls
+    const showToolCalls = resolveShowToolCalls(this.deps.config, this.deps.userPrefs, userId).value;
+    const unsubscribeToolStatus = showToolCalls
       ? runtime.subscribe(conversationId, (event) => {
           if (event.type === "tool_execution_start") {
             if (event.parentToolCallId) return;

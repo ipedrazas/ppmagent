@@ -25,6 +25,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   enforced in durable hooks. See "Migrating" in the README.
 
 ### Added
+- `/verbose [on|off|default]` (TAV-231): per-user (Telegram user id) override of
+  tool-call display, persisted in `user-prefs.json` beside the session files.
+  `PPMA_SHOW_TOOL_CALLS` remains the default for users with no stored choice.
 - **Phase 5 — Telegram adapter + durable session.** A minimal fetch-based
   Telegram Bot API client, a file-backed `SessionStore` (sessionId + active
   project + transcript), and a real `TelegramBot` run loop: each message →

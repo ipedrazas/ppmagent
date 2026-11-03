@@ -12,6 +12,7 @@ import { formatDueAt } from "../reminder/parse.ts";
 import type { ReminderStore } from "../reminder/store.ts";
 import type { SessionIndex } from "../session/session-index.ts";
 import { shortId } from "../session/store.ts";
+import { resolveShowToolCalls, type UserPrefs } from "../session/user-prefs.ts";
 import type { ConfirmationStore } from "../tools/confirmation.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
 import type { ChatSession } from "./chat-session.ts";
@@ -45,6 +46,8 @@ export interface CommandRouterDeps {
   index?: SessionIndex;
   /** When set, `/reminders` lists and cancels pending reminders. */
   reminderStore?: ReminderStore;
+  /** Per-user preferences for `/verbose`. Absent = `/verbose` reports it is unavailable. */
+  userPrefs?: UserPrefs;
   logger?: Logger;
 }
 
@@ -61,7 +64,7 @@ export class CommandRouter {
    *
    * Handles the group-chat form `/cmd@botname arg` via {@link parseCommand}.
    */
-  async route(chatId: number, text: string): Promise<string[] | null> {
+  async route(chatId: number, text: string, userId: number = chatId): Promise<string[] | null> {
     const { session, confirmationStore, recorder } = this.deps;
 
     const parsed = parseCommand(text);
@@ -135,6 +138,10 @@ export class CommandRouter {
       return this.reply(chatId, this.describeCommand(arg));
     }
 
+    if (cmd === "verbose") {
+      return this.reply(chatId, this.verboseCommand(userId, arg));
+    }
+
     if (cmd === "tools") {
       this.log.withMetadata({ chatId }).info("tools reported");
       return this.reply(chatId, await this.toolsReport());
@@ -206,6 +213,28 @@ export class CommandRouter {
       .withMetadata({ describeEnabled: session.describeEnabled })
       .info("describe mode toggled");
     return `Describe mode is now ${session.describeEnabled ? "ON" : "OFF"}.`;
+  }
+
+  /**
+   * Handle `/verbose [on|off|default|reset]`: a per-user override of the
+   * `PPMA_SHOW_TOOL_CALLS` default. Bare `/verbose` reports the effective
+   * setting and whether it is the env default or the user's own choice.
+   */
+  private verboseCommand(userId: number, arg: string): string {
+    const { userPrefs, config } = this.deps;
+    if (!userPrefs) return "Per-user preferences are unavailable.";
+    const normalized = arg.trim().toLowerCase();
+    if (normalized === "on" || normalized === "off") {
+      userPrefs.setShowToolCalls(userId, normalized === "on");
+      this.log.withMetadata({ userId, showToolCalls: normalized }).info("verbose set");
+    } else if (normalized === "default" || normalized === "reset") {
+      userPrefs.setShowToolCalls(userId, undefined);
+      this.log.withMetadata({ userId }).info("verbose reset to default");
+    } else if (normalized !== "") {
+      return "Usage: /verbose, /verbose on, /verbose off, or /verbose default";
+    }
+    const { value, source } = resolveShowToolCalls(config, userPrefs, userId);
+    return `Tool calls: ${value ? "on" : "off"} (${source === "user" ? "set by you" : "default"})`;
   }
 
   /**

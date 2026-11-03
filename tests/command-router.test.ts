@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { SessionState, SessionStore } from "../src/session/store.ts";
+import { UserPrefs } from "../src/session/user-prefs.ts";
 import { ChatSession } from "../src/telegram/chat-session.ts";
 import { CommandRouter, parseCommand } from "../src/telegram/command-router.ts";
 import { makeTestConfig } from "./support/config.ts";
@@ -24,9 +25,10 @@ afterEach(async () => {
 });
 
 /** A CommandRouter wired to a real ChatSession, capturing what it sends. */
-async function makeRouter() {
+async function makeRouter(opts: { showToolCalls?: boolean; userPrefs?: UserPrefs } = {}) {
   const sent: Array<{ chatId: number; messages: string[] }> = [];
-  const config = makeTestConfig();
+  const config = makeTestConfig({ showToolCalls: opts.showToolCalls ?? false });
+  const userPrefs = opts.userPrefs ?? new UserPrefs();
   const session = new ChatSession(config, { store: memStore() });
   const agent = await makeFauxAgent(config);
   agents.push(agent);
@@ -38,8 +40,9 @@ async function makeRouter() {
       sent.push({ chatId, messages });
     },
     abortSignal: new AbortController().signal,
+    userPrefs,
   });
-  return { router, session, sent, agent };
+  return { router, userPrefs, session, sent, agent };
 }
 
 describe("parseCommand", () => {
@@ -264,5 +267,51 @@ describe("CommandRouter — durable session reports", () => {
     const { router } = await makeRouter();
     const context = await router.route(1, "/context");
     expect(context?.[0]).toMatch(/across 0 messages/);
+  });
+});
+
+describe("/verbose", () => {
+  test("bare /verbose reports the env default and its source", async () => {
+    const off = await makeRouter({ showToolCalls: false });
+    expect(await off.router.route(1, "/verbose")).toEqual(["Tool calls: off (default)"]);
+    const on = await makeRouter({ showToolCalls: true });
+    expect(await on.router.route(1, "/verbose")).toEqual(["Tool calls: on (default)"]);
+  });
+
+  test("on/off set the user's preference and confirm", async () => {
+    const { router, userPrefs } = await makeRouter({ showToolCalls: false });
+    expect(await router.route(1, "/verbose on", 42)).toEqual(["Tool calls: on (set by you)"]);
+    expect(userPrefs.getShowToolCalls(42)).toBe(true);
+    expect(await router.route(1, "/verbose", 42)).toEqual(["Tool calls: on (set by you)"]);
+    expect(await router.route(1, "/verbose OFF", 42)).toEqual(["Tool calls: off (set by you)"]);
+  });
+
+  test("an explicit off is reported as set by you even when env is true", async () => {
+    const { router } = await makeRouter({ showToolCalls: true });
+    expect(await router.route(1, "/verbose off", 42)).toEqual(["Tool calls: off (set by you)"]);
+  });
+
+  test("the preference is per user, shared across chats", async () => {
+    const { router, userPrefs } = await makeRouter();
+    await router.route(100, "/verbose on", 42);
+    expect(await router.route(200, "/verbose", 42)).toEqual(["Tool calls: on (set by you)"]);
+    expect(await router.route(100, "/verbose", 43)).toEqual(["Tool calls: off (default)"]);
+    expect(userPrefs.getShowToolCalls(43)).toBeUndefined();
+  });
+
+  test("default/reset clears the user's choice back to the env default", async () => {
+    const { router, userPrefs } = await makeRouter({ showToolCalls: true });
+    await router.route(1, "/verbose off", 42);
+    expect(await router.route(1, "/verbose default", 42)).toEqual(["Tool calls: on (default)"]);
+    expect(userPrefs.getShowToolCalls(42)).toBeUndefined();
+    await router.route(1, "/verbose off", 42);
+    expect(await router.route(1, "/verbose reset", 42)).toEqual(["Tool calls: on (default)"]);
+  });
+
+  test("rejects an unknown argument without changing anything", async () => {
+    const { router, userPrefs } = await makeRouter();
+    const [reply] = (await router.route(1, "/verbose maybe", 42)) ?? [];
+    expect(reply).toContain("Usage: /verbose");
+    expect(userPrefs.getShowToolCalls(42)).toBeUndefined();
   });
 });

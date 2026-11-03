@@ -15,6 +15,7 @@ import { SessionBucket } from "./session/bucket.ts";
 import { SessionRetentionRunner } from "./session/retention.ts";
 import { SessionIndex } from "./session/session-index.ts";
 import { SessionStore } from "./session/store.ts";
+import { UserPrefs } from "./session/user-prefs.ts";
 import { TelegramBot } from "./telegram/bot.ts";
 import { ChatSession } from "./telegram/chat-session.ts";
 import { TelegramClient } from "./telegram/client.ts";
@@ -91,6 +92,7 @@ async function main(): Promise<void> {
 
   // Build the session index from the store so search works on existing sessions.
   const sessionRoot = dirname(config.sessionFile);
+  const userPrefs = new UserPrefs(join(sessionRoot, "user-prefs.json"));
   const sessionIndex = new SessionIndex(join(sessionRoot, "sessions", "index.json"), logger);
   sessionIndex.rebuild(store);
 
@@ -184,6 +186,7 @@ async function main(): Promise<void> {
     confirmationStore,
     index: sessionIndex,
     reminderStore,
+    userPrefs,
   });
 
   const retentionRunner = new SessionRetentionRunner({
@@ -206,7 +209,8 @@ async function main(): Promise<void> {
       secretToken: config.telegramWebhookSecret || undefined,
       allowedChatId: config.telegramAllowedChatId,
       client: telegramClient,
-      handleMessage: (chatId, text, updateId) => bot.handleMessage(chatId, text, updateId),
+      handleMessage: (chatId, text, updateId, userId) =>
+        bot.handleMessage(chatId, text, updateId, userId),
       logger,
     });
     logger
