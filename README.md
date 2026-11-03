@@ -47,6 +47,7 @@ handled locally (no model call, no token cost):
 | `/name <name>` | Give the current session a human-readable label. |
 | `/session` | Show the current session: short id, name, active project, and message count. |
 | `/describe [on\|off]` | Toggle describe mode. With no argument, flips the current state. When on, a reasoning-detail prompt is prepended to each message asking the agent to narrate why it's calling each tool, what it expects, and what it learned from the result. |
+| `/verbose [on\|off\|default]` | Show or hide a message for each tool call and its result as a turn progresses. Per-user (keyed by Telegram user id, across all your chats) and persisted across restarts; takes effect on the next turn. With no argument, reports the effective setting and whether it is the `PPMA_SHOW_TOOL_CALLS` default or your own choice; `default` clears your choice. |
 | `/tools` | List the external CLIs the agent shells out to (`ppm`, `dbxcli`, `proteos`) with the version of each installed build. |
 | `/resume [id\|name]` | With no argument, list saved sessions. With a short id or name, switch back to that session (the current transcript is saved first). |
 

@@ -225,7 +225,8 @@ export interface Config {
    * message for each tool call (name + arguments) and one for its result,
    * sent as the turn progresses. Default: false (only the typing indicator
    * is shown until the final reply, as before). Set `PPMA_SHOW_TOOL_CALLS=true`
-   * to enable.
+   * to enable. This is only the default: a user's `/verbose on|off` choice
+   * overrides it (see `resolveShowToolCalls`).
    */
   showToolCalls: boolean;
 

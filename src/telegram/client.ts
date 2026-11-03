@@ -6,6 +6,8 @@ import { splitByLength } from "./chunk.ts";
 
 export interface InboundMessage {
   chatId: number;
+  /** Telegram user id of the sender (`from.id`); absent when Telegram omits it. */
+  userId?: number;
   /** Defined for text messages; undefined for non-text (photos, voice notes, edits). */
   text?: string;
   /** Set for non-text messages: "photo", "voice", "audio", "video", "sticker", "edit", etc. */
@@ -86,6 +88,7 @@ export class TelegramClient {
         update_id: number;
         message?: {
           chat?: { id: number };
+          from?: { id: number };
           text?: string;
           photo?: unknown;
           voice?: unknown;
@@ -95,7 +98,7 @@ export class TelegramClient {
           document?: unknown;
           animation?: unknown;
         };
-        edited_message?: { chat?: { id: number }; text?: string };
+        edited_message?: { chat?: { id: number }; from?: { id: number }; text?: string };
       }>;
     };
     if (!body.ok || !body.result) {
@@ -110,8 +113,9 @@ export class TelegramClient {
       const chatId = u.message?.chat?.id ?? u.edited_message?.chat?.id;
       if (chatId === undefined) return { updateId: u.update_id, message: undefined };
 
+      const userId = u.message?.from?.id ?? u.edited_message?.from?.id;
       const text = u.message?.text;
-      if (text !== undefined) return { updateId: u.update_id, message: { chatId, text } };
+      if (text !== undefined) return { updateId: u.update_id, message: { chatId, userId, text } };
 
       // Non-text or edited message: classify and return so the bot can reply helpfully.
       const nonText = u.edited_message
@@ -131,7 +135,7 @@ export class TelegramClient {
                     : u.message?.animation
                       ? "animation"
                       : "unknown";
-      return { updateId: u.update_id, message: { chatId, nonText } };
+      return { updateId: u.update_id, message: { chatId, userId, nonText } };
     });
   }
 

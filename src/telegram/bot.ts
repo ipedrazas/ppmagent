@@ -5,6 +5,7 @@ import type { MetricsCollector } from "../metrics/collector.ts";
 import type { ReminderStore } from "../reminder/store.ts";
 import type { SessionIndex } from "../session/session-index.ts";
 import type { SessionStore } from "../session/store.ts";
+import { UserPrefs } from "../session/user-prefs.ts";
 import type { ConfirmationStore } from "../tools/confirmation.ts";
 import type { TraceRecorder } from "../trace/recorder.ts";
 import type { ChatSession } from "./chat-session.ts";
@@ -29,6 +30,8 @@ export interface TelegramBotDeps {
   index?: SessionIndex;
   /** When set, enables the /reminders command and reminder_* agent tools. */
   reminderStore?: ReminderStore;
+  /** Per-user preferences (`/verbose`). Defaults to a memory-only store. */
+  userPrefs?: UserPrefs;
 }
 
 /**
@@ -66,6 +69,7 @@ export class TelegramBot {
     // PPMA_ALLOW_ANY_CHAT opt-out (warned about loudly in start()).
     this.allowedChatId = config.telegramAllowedChatId;
     this.confirmationStore = deps.confirmationStore;
+    const userPrefs = deps.userPrefs ?? new UserPrefs();
     const send = (chatId: number, messages: string[]) => this.send(chatId, messages);
     this.router = new CommandRouter({
       session,
@@ -76,6 +80,7 @@ export class TelegramBot {
       recorder: deps.recorder,
       index: deps.index,
       reminderStore: deps.reminderStore,
+      userPrefs,
       logger: deps.logger,
     });
     this.turnRunner = new TurnRunner({
@@ -88,6 +93,7 @@ export class TelegramBot {
       confirmationStore: deps.confirmationStore,
       recorder: deps.recorder,
       metrics: deps.metrics,
+      userPrefs,
       logger: deps.logger,
     });
   }
@@ -103,10 +109,17 @@ export class TelegramBot {
    * Handle one inbound message: dispatch it as a slash command, or — when it is
    * not a command — run it as an agent turn. Returns the replies (for tests).
    */
-  async handleMessage(chatId: number, text: string, updateId?: number): Promise<string[]> {
-    const handled = await this.router.route(chatId, text);
+  async handleMessage(
+    chatId: number,
+    text: string,
+    updateId?: number,
+    userId?: number,
+  ): Promise<string[]> {
+    // In a private chat the user id equals the chat id; use it if Telegram omitted `from`.
+    const uid = userId ?? chatId;
+    const handled = await this.router.route(chatId, text, uid);
     if (handled !== null) return handled;
-    return this.turnRunner.run(chatId, text, updateId);
+    return this.turnRunner.run(chatId, text, updateId, uid);
   }
 
   /**
@@ -199,7 +212,7 @@ export class TelegramBot {
       await this.activeTurn;
       this.activeTurn = null;
     }
-    this.launchTurn(message.chatId, message.text, updateId);
+    this.launchTurn(message.chatId, message.text, updateId, message.userId);
   }
 
   /**
@@ -228,8 +241,8 @@ export class TelegramBot {
    * the user, never fatal to the loop. Tracks the turn as {@link activeTurn} and
    * clears it on completion if it is still the current one.
    */
-  private launchTurn(chatId: number, text: string, updateId?: number): void {
-    const turn: Promise<void> = this.handleMessage(chatId, text, updateId).then(
+  private launchTurn(chatId: number, text: string, updateId?: number, userId?: number): void {
+    const turn: Promise<void> = this.handleMessage(chatId, text, updateId, userId).then(
       () => {},
       (error) => {
         this.log.withError(error).withMetadata({ chatId }).error("turn dropped");
